@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Video Downloader</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div class="bg-gradient"></div>
+
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="5,3 19,12 5,21" fill="currentColor" stroke="none" />
+        </svg>
+        <span>VideoGet</span>
+      </div>
+      <div class="header-meta">High-res downloads from YouTube, X, Instagram, Facebook &amp; TikTok</div>
+    </header>
+
+    <!-- Main input card -->
+    <main class="main">
+      <div class="card input-card">
+        <div class="card-body">
+          <h2 class="card-title">Paste a video link</h2>
+
+          <div class="url-row">
+            <input
+              id="urlInput"
+              class="url-input"
+              type="url"
+              placeholder="https://youtube.com/watch?v=… or any supported link"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button id="fetchBtn" class="btn btn-primary" onclick="fetchInfo()">
+              <span class="btn-text">Fetch</span>
+              <span class="btn-spinner hidden"></span>
+            </button>
+          </div>
+
+          <!-- Platform pills -->
+          <div class="platform-pills">
+            <span class="pill yt">YouTube</span>
+            <span class="pill tw">X / Twitter</span>
+            <span class="pill ig">Instagram</span>
+            <span class="pill fb">Facebook</span>
+            <span class="pill tt">TikTok</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Video info preview (hidden until fetched) -->
+      <div id="infoCard" class="card info-card hidden">
+        <div class="card-body info-body">
+          <div class="thumb-wrap">
+            <img id="infoThumb" src="" alt="thumbnail" class="thumb" />
+            <span id="infoDuration" class="duration-badge"></span>
+          </div>
+          <div class="info-details">
+            <div id="infoPlatformBadge" class="platform-badge"></div>
+            <h3 id="infoTitle" class="info-title"></h3>
+            <p id="infoUploader" class="info-uploader"></p>
+            <div class="info-stats">
+              <span id="infoViews" class="stat hidden"></span>
+              <span id="infoLikes" class="stat hidden"></span>
+            </div>
+
+            <!-- Quality selector -->
+            <div class="quality-row">
+              <label class="quality-label">Quality</label>
+              <div class="quality-options" id="qualityOptions">
+                <label class="quality-btn active" data-q="best">
+                  <input type="radio" name="quality" value="best" checked hidden />
+                  Best
+                </label>
+                <label class="quality-btn" data-q="1080p">
+                  <input type="radio" name="quality" value="1080p" hidden />
+                  1080p
+                </label>
+                <label class="quality-btn" data-q="720p">
+                  <input type="radio" name="quality" value="720p" hidden />
+                  720p
+                </label>
+                <label class="quality-btn" data-q="480p">
+                  <input type="radio" name="quality" value="480p" hidden />
+                  480p
+                </label>
+                <label class="quality-btn" data-q="audio_only">
+                  <input type="radio" name="quality" value="audio_only" hidden />
+                  Audio
+                </label>
+              </div>
+            </div>
+
+            <button id="downloadBtn" class="btn btn-download" onclick="startDownload()">
+              Download
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active downloads -->
+      <div id="downloadsSection" class="hidden">
+        <h3 class="section-title">Downloads</h3>
+        <div id="downloadsList" class="downloads-list"></div>
+      </div>
+
+      <!-- Error message -->
+      <div id="errorBanner" class="error-banner hidden">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span id="errorText"></span>
+        <button onclick="clearError()" class="error-close">✕</button>
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>Files saved to <strong id="outputDirText">~/Downloads/VideoDownloader</strong></span>
+    </footer>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
