@@ -1,138 +1,110 @@
-import streamlit as st
-import yt_dlp
-import tempfile
-import os
+"""
+Flask web server — REST API + static file serving for the video downloader UI.
+"""
+
+import uuid
 from pathlib import Path
 
-try:
-    import imageio_ffmpeg
-    FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-except ImportError:
-    FFMPEG_PATH = None
+from flask import Flask, jsonify, request, send_from_directory
+from flask_cors import CORS
 
-QUALITY_OPTIONS = ["Best Quality", "1080p", "720p", "480p", "Audio Only (MP3)"]
-QUALITY_FORMAT_MAP = {
-    "Best Quality":     "bestvideo+bestaudio/best",
-    "1080p":            "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
-    "720p":             "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-    "480p":             "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
-    "Audio Only (MP3)": "bestaudio/best",
-}
+from downloader import VideoDownloader, QUALITY_PRESETS, SUPPORTED_PLATFORMS, detect_platform
 
-st.set_page_config(
-    page_title="Video Downloader",
-    page_icon="🎬",
-    layout="centered",
-)
+app = Flask(__name__, static_folder="static", template_folder="templates")
+CORS(app)
 
-st.title("🎬 Social Media Video Downloader")
-st.caption(
-    "Supports: **YouTube** · **Instagram** · **TikTok** · **Douyin** · "
-    "**Facebook** · **X** · **Bilibili** · **Xiaohongshu**"
-)
-st.divider()
+downloader = VideoDownloader()
 
-url = st.text_input(
-    "Video URL",
-    placeholder="https://www.youtube.com/watch?v=...",
-    label_visibility="collapsed",
-)
 
-col1, col2 = st.columns([1, 1])
-with col1:
-    quality = st.selectbox("Quality", QUALITY_OPTIONS)
-with col2:
-    st.markdown("<br>", unsafe_allow_html=True)
-    download_clicked = st.button("⬇️ Download", type="primary", use_container_width=True)
+# ── Static pages ─────────────────────────────────────────────────────────────
 
-st.caption(
-    "⚠️ Note: private or login-required videos cannot be downloaded from the web version. "
-    "Use the desktop app for those."
-)
+@app.route("/")
+def index():
+    return send_from_directory("templates", "index.html")
 
-if download_clicked:
-    url = url.strip()
+
+# ── API ───────────────────────────────────────────────────────────────────────
+
+@app.route("/api/info", methods=["POST"])
+def api_info():
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
     if not url:
-        st.warning("Please paste a video URL first.")
-    else:
-        progress_bar = st.progress(0, text="Starting download…")
-        status_text = st.empty()
+        return jsonify({"error": "No URL provided"}), 400
 
-        try:
-            tmpdir = tempfile.mkdtemp()
-            is_audio = quality == "Audio Only (MP3)"
+    info = downloader.get_info(url)
+    return jsonify(info)
 
-            def progress_hook(d):
-                if d["status"] == "downloading":
-                    total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
-                    downloaded = d.get("downloaded_bytes", 0)
-                    if total > 0:
-                        pct = int(downloaded / total * 100)
-                        speed = d.get("_speed_str", "")
-                        eta = d.get("_eta_str", "")
-                        progress_bar.progress(
-                            min(pct, 99),
-                            text=f"Downloading… {pct}%  {speed}  ETA {eta}",
-                        )
 
-            ydl_opts = {
-                "format": QUALITY_FORMAT_MAP[quality],
-                "outtmpl": os.path.join(tmpdir, "%(title)s.%(ext)s"),
-                "merge_output_format": "mp4",
-                "progress_hooks": [progress_hook],
-                "quiet": True,
-                "no_warnings": True,
-            }
-            if FFMPEG_PATH:
-                ydl_opts["ffmpeg_location"] = FFMPEG_PATH
-            if is_audio:
-                ydl_opts["postprocessors"] = [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }]
+@app.route("/api/download", methods=["POST"])
+def api_download():
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    quality = (data.get("quality") or "best").strip()
+    cookies_file = (data.get("cookies_file") or "").strip() or None
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                title = info.get("title", "video") if info else "video"
+    if not url:
+        return jsonify({"error": "No URL provided"}), 400
 
-            files = os.listdir(tmpdir)
-            if not files:
-                st.error("Download failed: no file was produced.")
-            else:
-                filepath = os.path.join(tmpdir, files[0])
-                with open(filepath, "rb") as f:
-                    data = f.read()
+    if quality not in QUALITY_PRESETS:
+        quality = "best"
 
-                progress_bar.progress(100, text="Done!")
-                status_text.success(f"✅ **{title}**")
+    download_id = str(uuid.uuid4())
+    _progress, did = downloader.download(
+        url=url,
+        quality=quality,
+        download_id=download_id,
+        cookies_file=cookies_file,
+    )
 
-                mime = "audio/mpeg" if is_audio else "video/mp4"
-                st.download_button(
-                    label="💾 Save to your computer",
-                    data=data,
-                    file_name=files[0],
-                    mime=mime,
-                    use_container_width=True,
-                )
+    return jsonify({"download_id": did, "status": "started", "output_dir": downloader.output_path})
 
-        except Exception as e:
-            progress_bar.empty()
-            err = str(e)
-            if "Private video" in err or "login" in err.lower():
-                st.error(
-                    "❌ This video requires login. "
-                    "Please use the desktop app with your browser cookies."
-                )
-            elif "not available" in err.lower():
-                st.error("❌ This video is not available or the URL is invalid.")
-            else:
-                st.error(f"❌ Download failed: {err[:200]}")
 
-st.divider()
-st.markdown(
-    "<div style='text-align:center; color:gray; font-size:12px'>"
-    "Powered by <a href='https://github.com/yt-dlp/yt-dlp' target='_blank'>yt-dlp</a>"
-    "</div>",
-    unsafe_allow_html=True,
-)
+@app.route("/api/progress/<download_id>")
+def api_progress(download_id):
+    progress = downloader.get_progress(download_id)
+    if progress is None:
+        return jsonify({"error": "Download not found"}), 404
+    return jsonify(progress)
+
+
+@app.route("/api/downloads")
+def api_downloads():
+    return jsonify(downloader.list_downloads())
+
+
+@app.route("/api/platforms")
+def api_platforms():
+    return jsonify(
+        {
+            "western": {
+                k: v
+                for k, v in SUPPORTED_PLATFORMS.items()
+            },
+            "qualities": list(QUALITY_PRESETS.keys()),
+        }
+    )
+
+
+@app.route("/api/output_dir")
+def api_output_dir():
+    return jsonify({"path": downloader.output_path})
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Video Downloader Web Server")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=5000)
+    parser.add_argument("--output", default=None, help="Custom output directory")
+    parser.add_argument("--debug", action="store_true")
+    args = parser.parse_args()
+
+    if args.output:
+        downloader = VideoDownloader(output_dir=args.output)
+
+    print(f"\n  Video Downloader running at  http://{args.host}:{args.port}")
+    print(f"  Downloads saved to           {downloader.output_path}\n")
+
+    app.run(host=args.host, port=args.port, debug=args.debug)
