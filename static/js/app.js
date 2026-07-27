@@ -19,12 +19,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter') fetchInfo();
   });
 
-  // Paste auto-detect: if the input already has a URL, kick off a fetch
-  $('urlInput').addEventListener('paste', () => {
+  // Paste auto-detect: extract URL from any pasted text (e.g. Douyin share text)
+  $('urlInput').addEventListener('paste', e => {
     setTimeout(() => {
-      const url = $('urlInput').value;
-      if (url.startsWith('http')) {
-        autoSelectBrowser(url);
+      const raw = $('urlInput').value;
+      const extracted = extractUrl(raw);
+      if (extracted && extracted !== raw) {
+        $('urlInput').value = extracted;
+      }
+      if ($('urlInput').value.startsWith('http')) {
+        autoSelectBrowser($('urlInput').value);
         fetchInfo();
       }
     }, 50);
@@ -60,6 +64,12 @@ function getSelectedBrowser() {
   return document.getElementById('browserSelect')?.value || '';
 }
 
+// Extract the first http/https URL from a block of text
+function extractUrl(text) {
+  const match = text.match(/https?:\/\/[^\s\u3000-\u9fff，。！？、""''【】（）《》]+/);
+  return match ? match[0].replace(/[.,，。！？、]+$/, '') : text.trim();
+}
+
 // Auto-suggest browser cookies for platforms that need them
 function autoSelectBrowser(url) {
   const sel = document.getElementById('browserSelect');
@@ -73,8 +83,12 @@ function autoSelectBrowser(url) {
 }
 
 async function fetchInfo() {
-  const url = $('urlInput').value.trim();
-  if (!url) return;
+  const raw = $('urlInput').value.trim();
+  if (!raw) return;
+
+  // Auto-extract URL from share text (e.g. Douyin/WeChat share snippets)
+  const url = extractUrl(raw);
+  if (url !== raw) $('urlInput').value = url;
 
   autoSelectBrowser(url);
   clearError();
