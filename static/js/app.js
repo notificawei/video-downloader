@@ -22,7 +22,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Paste auto-detect: if the input already has a URL, kick off a fetch
   $('urlInput').addEventListener('paste', () => {
     setTimeout(() => {
-      if ($('urlInput').value.startsWith('http')) fetchInfo();
+      const url = $('urlInput').value;
+      if (url.startsWith('http')) {
+        autoSelectBrowser(url);
+        fetchInfo();
+      }
     }, 50);
   });
 });
@@ -56,10 +60,23 @@ function getSelectedBrowser() {
   return document.getElementById('browserSelect')?.value || '';
 }
 
+// Auto-suggest browser cookies for platforms that need them
+function autoSelectBrowser(url) {
+  const sel = document.getElementById('browserSelect');
+  if (!sel || sel.value) return; // don't override if user already picked
+  const needsCookies = ['youtube.com', 'youtu.be', 'douyin.com', 'v.douyin.com', 'bilibili.com', 'b23.tv'];
+  if (needsCookies.some(d => url.includes(d))) {
+    // Pick Chrome if available, otherwise first real option
+    const chrome = sel.querySelector('option[value="chrome"]');
+    if (chrome) sel.value = 'chrome';
+  }
+}
+
 async function fetchInfo() {
   const url = $('urlInput').value.trim();
   if (!url) return;
 
+  autoSelectBrowser(url);
   clearError();
   hide($('infoCard'));
 
