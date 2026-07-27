@@ -19,6 +19,10 @@
   --ig: #e1306c;
   --fb: #1877f2;
   --tt: #fe2c55;
+  --bl: #00a1d6;
+  --dy: #161823;
+  --dy-fg: #ff4259;
+  --xhs: #ff2442;
   --radius: 16px;
   --radius-sm: 10px;
   --shadow: 0 8px 32px rgba(0,0,0,0.4);
@@ -162,6 +166,25 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Browser cookie selector ──────────────────────────────────────────────── */
+.browser-row {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 12px; flex-wrap: wrap;
+}
+.browser-label { font-size: 0.8rem; color: var(--text-muted); font-weight: 500; white-space: nowrap; }
+.browser-select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 12px;
+  color: var(--text);
+  font-size: 0.82rem; font-family: inherit;
+  outline: none; cursor: pointer;
+  transition: border-color 0.2s;
+}
+.browser-select:focus { border-color: var(--accent); }
+.browser-hint { font-size: 0.73rem; color: var(--text-muted); }
+
 /* ── Platform pills ───────────────────────────────────────────────────────── */
 .platform-pills {
   display: flex; flex-wrap: wrap; gap: 8px;
@@ -178,6 +201,9 @@ body {
 .pill.ig  { background: rgba(225,48,108,0.15); color: var(--ig); }
 .pill.fb  { background: rgba(24,119,242,0.15); color: var(--fb); }
 .pill.tt  { background: rgba(254,44,85,0.15);  color: var(--tt); }
+.pill.bl  { background: rgba(0,161,214,0.15);  color: var(--bl); }
+.pill.dy  { background: rgba(255,66,89,0.15);  color: var(--dy-fg); }
+.pill.xhs { background: rgba(255,36,66,0.15);  color: var(--xhs); }
 
 /* ── Info card ────────────────────────────────────────────────────────────── */
 .info-body {
@@ -209,6 +235,9 @@ body {
 .platform-badge.instagram { background: rgba(225,48,108,0.15); color: var(--ig); }
 .platform-badge.facebook  { background: rgba(24,119,242,0.15); color: var(--fb); }
 .platform-badge.tiktok    { background: rgba(254,44,85,0.15);  color: var(--tt); }
+.platform-badge.bilibili  { background: rgba(0,161,214,0.15);  color: var(--bl); }
+.platform-badge.douyin    { background: rgba(255,66,89,0.15);  color: var(--dy-fg); }
+.platform-badge.xiaohongshu { background: rgba(255,36,66,0.15); color: var(--xhs); }
 .platform-badge.unknown   { background: var(--surface2); color: var(--text-muted); }
 
 .info-title {

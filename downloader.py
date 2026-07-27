@@ -17,6 +17,10 @@ SUPPORTED_PLATFORMS = {
     "instagram": ["instagram.com"],
     "facebook": ["facebook.com", "fb.watch"],
     "tiktok": ["tiktok.com", "vm.tiktok.com"],
+    # Chinese platforms
+    "bilibili": ["bilibili.com", "b23.tv"],
+    "douyin": ["douyin.com", "v.douyin.com"],
+    "xiaohongshu": ["xiaohongshu.com", "xhslink.com", "redbook.com"],
 }
 
 QUALITY_PRESETS = {
@@ -116,6 +120,7 @@ class VideoDownloader:
         progress: DownloadProgress,
         platform: Optional[str],
         cookies_file: Optional[str] = None,
+        cookies_from_browser: Optional[str] = None,
     ) -> dict:
         format_selector = QUALITY_PRESETS.get(quality, QUALITY_PRESETS["best"])
 
@@ -138,31 +143,36 @@ class VideoDownloader:
                     "add_metadata": True,
                 },
             ],
-            # Embed thumbnail where supported
             "writethumbnail": False,
-            # Retry logic
             "retries": 3,
             "fragment_retries": 3,
-            # Rate limit placeholder (None = unlimited)
             "ratelimit": None,
         }
 
-        # Platform-specific tweaks
         if platform == "instagram":
-            opts["noplaylist"] = False  # allow reel collections
+            opts["noplaylist"] = False
 
-        if platform in ("x_twitter", "instagram", "facebook"):
-            # These platforms often need cookies; supply if available
-            pass
+        # Bilibili: prefer mp4 container; higher quality needs login cookies
+        if platform == "bilibili":
+            opts["format"] = format_selector + "/bestvideo+bestaudio/best"
+
+        # Douyin / Xiaohongshu: disable playlist by default (share links are single videos)
+        if platform in ("douyin", "xiaohongshu"):
+            opts["noplaylist"] = True
 
         if cookies_file and Path(cookies_file).exists():
             opts["cookiefile"] = cookies_file
+        elif cookies_from_browser:
+            opts["cookiesfrombrowser"] = (cookies_from_browser,)
 
         return opts
 
-    def get_info(self, url: str) -> dict:
+    def get_info(self, url: str, cookies_from_browser: Optional[str] = None) -> dict:
         """Fetch video metadata without downloading."""
-        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+        ydl_opts: dict = {"quiet": True, "no_warnings": True}
+        if cookies_from_browser:
+            ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
                 info = ydl.extract_info(url, download=False)
                 if not info:
@@ -217,6 +227,7 @@ class VideoDownloader:
         quality: str = "best",
         download_id: str = "",
         cookies_file: Optional[str] = None,
+        cookies_from_browser: Optional[str] = None,
     ) -> DownloadProgress:
         platform = detect_platform(url)
         progress = DownloadProgress()
@@ -230,7 +241,7 @@ class VideoDownloader:
             self._active_downloads[download_id] = progress
 
         def _run():
-            opts = self._build_ydl_opts(quality, progress, platform, cookies_file)
+            opts = self._build_ydl_opts(quality, progress, platform, cookies_file, cookies_from_browser)
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([url])

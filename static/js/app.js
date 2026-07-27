@@ -52,6 +52,10 @@ function getSelectedQuality() {
 }
 
 /* ── Fetch video info ─────────────────────────────────────────────────────── */
+function getSelectedBrowser() {
+  return document.getElementById('browserSelect')?.value || '';
+}
+
 async function fetchInfo() {
   const url = $('urlInput').value.trim();
   if (!url) return;
@@ -68,7 +72,7 @@ async function fetchInfo() {
     const res = await fetch('/api/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, cookies_from_browser: getSelectedBrowser() }),
     });
     const data = await res.json();
 
@@ -144,7 +148,7 @@ async function startDownload() {
     const res = await fetch('/api/download', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, quality }),
+      body: JSON.stringify({ url, quality, cookies_from_browser: getSelectedBrowser() }),
     });
     const data = await res.json();
 
@@ -270,7 +274,8 @@ function formatCount(n) {
 
 function platformLabel(p) {
   return { youtube: 'YouTube', x_twitter: 'X / Twitter', instagram: 'Instagram',
-           facebook: 'Facebook', tiktok: 'TikTok' }[p] || p;
+           facebook: 'Facebook', tiktok: 'TikTok',
+           bilibili: 'Bilibili', douyin: 'Douyin 抖音', xiaohongshu: '小红书 RED' }[p] || p;
 }
 
 function statusLabel(s) {
