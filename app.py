@@ -29,10 +29,11 @@ def index():
 def api_info():
     data = request.get_json(silent=True) or {}
     url = (data.get("url") or "").strip()
+    cookies_from_browser = (data.get("cookies_from_browser") or "").strip() or None
     if not url:
         return jsonify({"error": "No URL provided"}), 400
 
-    info = downloader.get_info(url)
+    info = downloader.get_info(url, cookies_from_browser=cookies_from_browser)
     return jsonify(info)
 
 
@@ -42,6 +43,7 @@ def api_download():
     url = (data.get("url") or "").strip()
     quality = (data.get("quality") or "best").strip()
     cookies_file = (data.get("cookies_file") or "").strip() or None
+    cookies_from_browser = (data.get("cookies_from_browser") or "").strip() or None
 
     if not url:
         return jsonify({"error": "No URL provided"}), 400
@@ -55,6 +57,7 @@ def api_download():
         quality=quality,
         download_id=download_id,
         cookies_file=cookies_file,
+        cookies_from_browser=cookies_from_browser,
     )
 
     return jsonify({"download_id": did, "status": "started", "output_dir": downloader.output_path})
