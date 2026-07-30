@@ -5,11 +5,26 @@ Supports: YouTube, X/Twitter, Instagram, Facebook, TikTok
 
 import os
 import re
+import shutil
 import threading
 from pathlib import Path
 from typing import Callable, Optional
 
 import yt_dlp
+
+
+def _find_ffmpeg() -> Optional[str]:
+    """Return the directory containing ffmpeg, checking common macOS locations."""
+    candidate = shutil.which("ffmpeg")
+    if candidate:
+        return str(Path(candidate).parent)
+    for p in ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"):
+        if Path(p, "ffmpeg").exists():
+            return p
+    return None
+
+
+_FFMPEG_LOCATION = _find_ffmpeg()
 
 SUPPORTED_PLATFORMS = {
     "youtube": ["youtube.com", "youtu.be"],
@@ -128,6 +143,8 @@ class VideoDownloader:
             "format": format_selector,
             "outtmpl": str(self.output_dir / "%(uploader)s - %(title)s.%(ext)s"),
             "merge_output_format": "mp4",
+            **({"ffmpeg_location": _FFMPEG_LOCATION} if _FFMPEG_LOCATION else {}),
+            "proxy": "",  # bypass any inherited proxy env vars
             "noplaylist": True,
             "progress_hooks": [self._make_progress_hook(progress)],
             "quiet": True,
@@ -169,7 +186,7 @@ class VideoDownloader:
 
     def get_info(self, url: str, cookies_from_browser: Optional[str] = None) -> dict:
         """Fetch video metadata without downloading."""
-        ydl_opts: dict = {"quiet": True, "no_warnings": True}
+        ydl_opts: dict = {"quiet": True, "no_warnings": True, "proxy": ""}
         if cookies_from_browser:
             ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
