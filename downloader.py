@@ -141,7 +141,7 @@ class VideoDownloader:
 
         opts = {
             "format": format_selector,
-            "outtmpl": str(self.output_dir / "%(uploader)s - %(title)s.%(ext)s"),
+            "outtmpl": str(self.output_dir / "%(uploader)s - %(title)s [%(id)s].%(ext)s"),
             "merge_output_format": "mp4",
             **({"ffmpeg_location": _FFMPEG_LOCATION} if _FFMPEG_LOCATION else {}),
             "proxy": "",  # bypass any inherited proxy env vars
@@ -151,10 +151,6 @@ class VideoDownloader:
             "no_warnings": False,
             "extract_flat": False,
             "postprocessors": [
-                {
-                    "key": "FFmpegVideoConvertor",
-                    "preferedformat": "mp4",
-                },
                 {
                     "key": "FFmpegMetadata",
                     "add_metadata": True,
