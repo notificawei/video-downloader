@@ -6,6 +6,7 @@ Supports: YouTube, X/Twitter, Instagram, Facebook, TikTok
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import threading
 from pathlib import Path
@@ -153,20 +154,7 @@ class VideoDownloader:
             "quiet": True,
             "no_warnings": False,
             "extract_flat": False,
-            # Re-encode to H.264/AAC for universal compatibility (QuickTime, Premiere, etc.)
-            "postprocessors": [
-                {
-                    "key": "FFmpegVideoConvertor",
-                    "preferedformat": "mp4",
-                },
-            ],
-            "postprocessor_args": {
-                "videoconvertor": [
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                    "-c:a", "aac", "-b:a", "192k",
-                    "-movflags", "+faststart",
-                ],
-            },
+            "postprocessors": [],
             "writethumbnail": False,
             "retries": 3,
             "fragment_retries": 3,
@@ -279,10 +267,30 @@ class VideoDownloader:
                     if progress.status in ("error",):
                         return
 
-                    # Move every finished file to the real output directory
-                    for src in Path(tmp_dir).iterdir():
-                        if src.suffix in (".mp4", ".m4a", ".mp3", ".webm", ".mkv"):
-                            dest = self.output_dir / src.name
+                    # Re-encode to H.264/AAC for universal compatibility
+                    # (QuickTime, Premiere Pro, VLC, etc.)
+                    progress.status = "processing"
+                    ffmpeg = shutil.which("ffmpeg") or (
+                        str(Path(_FFMPEG_LOCATION) / "ffmpeg") if _FFMPEG_LOCATION else "ffmpeg"
+                    )
+                    for src in sorted(Path(tmp_dir).iterdir()):
+                        if src.suffix not in (".mp4", ".m4a", ".mp3", ".webm", ".mkv"):
+                            continue
+                        dest = self.output_dir / src.with_suffix(".mp4").name
+                        result = subprocess.run(
+                            [
+                                ffmpeg, "-y", "-i", str(src),
+                                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                                "-c:a", "aac", "-b:a", "192k",
+                                "-movflags", "+faststart",
+                                str(dest),
+                            ],
+                            capture_output=True,
+                        )
+                        if result.returncode == 0:
+                            progress.filename = dest.name
+                        else:
+                            # Fallback: just move as-is if ffmpeg fails
                             shutil.move(str(src), str(dest))
                             progress.filename = dest.name
 
