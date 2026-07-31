@@ -6,6 +6,7 @@ Supports: YouTube, X/Twitter, Instagram, Facebook, TikTok
 import os
 import re
 import shutil
+import tempfile
 import threading
 from pathlib import Path
 from typing import Callable, Optional
@@ -136,12 +137,14 @@ class VideoDownloader:
         platform: Optional[str],
         cookies_file: Optional[str] = None,
         cookies_from_browser: Optional[str] = None,
+        output_dir: Optional[str] = None,
     ) -> dict:
         format_selector = QUALITY_PRESETS.get(quality, QUALITY_PRESETS["best"])
+        out_dir = Path(output_dir) if output_dir else self.output_dir
 
         opts = {
             "format": format_selector,
-            "outtmpl": str(self.output_dir / "%(uploader)s - %(title)s [%(id)s].%(ext)s"),
+            "outtmpl": str(out_dir / "%(uploader)s - %(title)s [%(id)s].%(ext)s"),
             "merge_output_format": "mp4",
             **({"ffmpeg_location": _FFMPEG_LOCATION} if _FFMPEG_LOCATION else {}),
             "proxy": "",  # bypass any inherited proxy env vars
@@ -254,19 +257,35 @@ class VideoDownloader:
             self._active_downloads[download_id] = progress
 
         def _run():
-            opts = self._build_ydl_opts(quality, progress, platform, cookies_file, cookies_from_browser)
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.download([url])
-                if progress.status not in ("error",):
+            # Download into a private temp dir so yt-dlp can freely rename/merge,
+            # then move the finished file into the real output directory.
+            with tempfile.TemporaryDirectory(prefix="vdl_") as tmp_dir:
+                opts = self._build_ydl_opts(
+                    quality, progress, platform, cookies_file, cookies_from_browser,
+                    output_dir=tmp_dir,
+                )
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        ydl.download([url])
+
+                    if progress.status in ("error",):
+                        return
+
+                    # Move every finished file to the real output directory
+                    for src in Path(tmp_dir).iterdir():
+                        if src.suffix in (".mp4", ".m4a", ".mp3", ".webm", ".mkv"):
+                            dest = self.output_dir / src.name
+                            shutil.move(str(src), str(dest))
+                            progress.filename = dest.name
+
                     progress.status = "done"
                     progress.percent = 100.0
-            except yt_dlp.utils.DownloadError as e:
-                progress.status = "error"
-                progress.error = str(e)
-            except Exception as e:
-                progress.status = "error"
-                progress.error = f"Unexpected error: {e}"
+                except yt_dlp.utils.DownloadError as e:
+                    progress.status = "error"
+                    progress.error = str(e)
+                except Exception as e:
+                    progress.status = "error"
+                    progress.error = f"Unexpected error: {e}"
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
