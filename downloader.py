@@ -47,7 +47,7 @@ QUALITY_PRESETS = {
     "audio_only": "bestaudio/best",
 }
 
-DEFAULT_OUTPUT_DIR = Path.home() / "Downloads" / "VideoDownloader"
+DEFAULT_OUTPUT_DIR = Path.home() / "Desktop" / "VideoDownloader"
 
 
 def detect_platform(url: str) -> Optional[str]:
@@ -153,12 +153,20 @@ class VideoDownloader:
             "quiet": True,
             "no_warnings": False,
             "extract_flat": False,
+            # Re-encode to H.264/AAC for universal compatibility (QuickTime, Premiere, etc.)
             "postprocessors": [
                 {
-                    "key": "FFmpegMetadata",
-                    "add_metadata": True,
+                    "key": "FFmpegVideoConvertor",
+                    "preferedformat": "mp4",
                 },
             ],
+            "postprocessor_args": {
+                "videoconvertor": [
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-c:a", "aac", "-b:a", "192k",
+                    "-movflags", "+faststart",
+                ],
+            },
             "writethumbnail": False,
             "retries": 3,
             "fragment_retries": 3,
