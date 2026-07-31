@@ -74,7 +74,8 @@ function extractUrl(text) {
 function autoSelectBrowser(url) {
   const sel = document.getElementById('browserSelect');
   if (!sel || sel.value) return; // don't override if user already picked
-  const needsCookies = ['youtube.com', 'youtu.be', 'douyin.com', 'v.douyin.com', 'bilibili.com', 'b23.tv'];
+  const needsCookies = ['youtube.com', 'youtu.be', 'douyin.com', 'v.douyin.com', 'bilibili.com', 'b23.tv',
+                        'instagram.com', 'facebook.com', 'fb.watch', 'tiktok.com', 'vm.tiktok.com'];
   if (needsCookies.some(d => url.includes(d))) {
     // Pick Chrome if available, otherwise first real option
     const chrome = sel.querySelector('option[value="chrome"]');
