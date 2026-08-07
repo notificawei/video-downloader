@@ -94,6 +94,17 @@ def api_output_dir():
     return jsonify({"path": downloader.output_path})
 
 
+@app.route("/api/debug")
+def api_debug():
+    """Return all active downloads and runtime info for troubleshooting."""
+    from downloader import _FFMPEG_LOCATION, _NODE_PATH
+    return jsonify({
+        "ffmpeg": _FFMPEG_LOCATION,
+        "node": _NODE_PATH,
+        "downloads": downloader.list_downloads(),
+    })
+
+
 if __name__ == "__main__":
     import argparse
 
