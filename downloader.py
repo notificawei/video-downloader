@@ -26,7 +26,21 @@ def _find_ffmpeg() -> Optional[str]:
     return None
 
 
+def _find_node() -> Optional[str]:
+    """Return the full path to a node/bun executable for yt-dlp's JS runtime."""
+    for name in ("node", "bun"):
+        candidate = shutil.which(name)
+        if candidate:
+            return candidate
+    for p in ("/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node",
+              "/opt/homebrew/bin/bun", "/usr/local/bin/bun"):
+        if Path(p).exists():
+            return p
+    return None
+
+
 _FFMPEG_LOCATION = _find_ffmpeg()
+_NODE_PATH = _find_node()
 
 SUPPORTED_PLATFORMS = {
     "youtube": ["youtube.com", "youtu.be"],
@@ -161,6 +175,13 @@ class VideoDownloader:
             "ratelimit": None,
         }
 
+        if platform == "youtube":
+            # yt-dlp 2026+ requires a JS runtime to generate PO tokens for YouTube.
+            # Pass Node.js/Bun if available; without it many formats are unavailable.
+            if _NODE_PATH:
+                runtime_name = "bun" if "bun" in _NODE_PATH else "node"
+                opts["js_runtimes"] = [f"{runtime_name}:{_NODE_PATH}"]
+
         if platform == "instagram":
             opts["noplaylist"] = False
 
@@ -184,6 +205,10 @@ class VideoDownloader:
         ydl_opts: dict = {"quiet": True, "no_warnings": True, "proxy": ""}
         if cookies_from_browser:
             ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
+        platform = detect_platform(url)
+        if platform == "youtube" and _NODE_PATH:
+            runtime_name = "bun" if "bun" in _NODE_PATH else "node"
+            ydl_opts["js_runtimes"] = [f"{runtime_name}:{_NODE_PATH}"]
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
                 info = ydl.extract_info(url, download=False)
