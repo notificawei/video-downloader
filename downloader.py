@@ -3,6 +3,7 @@ Core download engine built on yt-dlp.
 Supports: YouTube, X/Twitter, Instagram, Facebook, TikTok
 """
 
+import logging
 import os
 import re
 import shutil
@@ -13,6 +14,18 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import yt_dlp
+
+# Log to the same file launchd uses so errors are always visible.
+_LOG_FILE = Path.home() / "Library" / "Logs" / "videoget.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(_LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+log = logging.getLogger(__name__)
 
 
 def _find_ffmpeg() -> Optional[str]:
@@ -41,6 +54,9 @@ def _find_node() -> Optional[str]:
 
 _FFMPEG_LOCATION = _find_ffmpeg()
 _NODE_PATH = _find_node()
+
+log.info("ffmpeg: %s", _FFMPEG_LOCATION or "not found")
+log.info("node/bun: %s", _NODE_PATH or "not found")
 
 SUPPORTED_PLATFORMS = {
     "youtube": ["youtube.com", "youtu.be"],
@@ -181,6 +197,11 @@ class VideoDownloader:
             if _NODE_PATH:
                 runtime_name = "bun" if "bun" in _NODE_PATH else "node"
                 opts["js_runtimes"] = [f"{runtime_name}:{_NODE_PATH}"]
+            # mweb (mobile web) player client works without PO tokens and bypasses
+            # most bot-detection checks that affect the default android client.
+            opts["extractor_args"] = {
+                "youtube": {"player_client": ["mweb", "web", "android"]}
+            }
 
         if platform == "instagram":
             opts["noplaylist"] = False
@@ -206,9 +227,13 @@ class VideoDownloader:
         if cookies_from_browser:
             ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
         platform = detect_platform(url)
-        if platform == "youtube" and _NODE_PATH:
-            runtime_name = "bun" if "bun" in _NODE_PATH else "node"
-            ydl_opts["js_runtimes"] = [f"{runtime_name}:{_NODE_PATH}"]
+        if platform == "youtube":
+            if _NODE_PATH:
+                runtime_name = "bun" if "bun" in _NODE_PATH else "node"
+                ydl_opts["js_runtimes"] = [f"{runtime_name}:{_NODE_PATH}"]
+            ydl_opts["extractor_args"] = {
+                "youtube": {"player_client": ["mweb", "web", "android"]}
+            }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
                 info = ydl.extract_info(url, download=False)
@@ -324,9 +349,11 @@ class VideoDownloader:
                 except yt_dlp.utils.DownloadError as e:
                     progress.status = "error"
                     progress.error = str(e)
+                    log.error("DownloadError for %s: %s", url, e)
                 except Exception as e:
                     progress.status = "error"
                     progress.error = f"Unexpected error: {e}"
+                    log.exception("Unexpected error downloading %s", url)
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
