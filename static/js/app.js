@@ -5,6 +5,103 @@ const state = {
   pollingTimers: {},      // id → intervalId
 };
 
+/* ── Link history (localStorage) ─────────────────────────────────────────── */
+const HISTORY_KEY = 'videoget_history';
+const HISTORY_MAX = 100;
+
+function loadHistory() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; }
+  catch (_) { return []; }
+}
+
+function saveHistory(items) {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(items));
+}
+
+function addToHistory(url, info) {
+  const items = loadHistory().filter(i => i.url !== url); // dedupe
+  items.unshift({
+    url,
+    title: info.title || url,
+    platform: info.platform || '',
+    thumbnail: info.thumbnail || '',
+    addedAt: Date.now(),
+  });
+  saveHistory(items.slice(0, HISTORY_MAX));
+  renderHistory();
+}
+
+function deleteFromHistory(url) {
+  saveHistory(loadHistory().filter(i => i.url !== url));
+  renderHistory();
+}
+
+function clearHistory() {
+  saveHistory([]);
+  renderHistory();
+}
+
+function renderHistory() {
+  const items = loadHistory();
+  const section = $('historySection');
+  const list = $('historyList');
+  const countEl = $('historyCount');
+
+  if (items.length === 0) {
+    hide(section);
+    return;
+  }
+
+  show(section);
+  countEl.textContent = items.length;
+
+  list.innerHTML = items.map(item => {
+    const thumbHtml = item.thumbnail
+      ? `<img class="history-thumb" src="${escapeHtml(item.thumbnail)}" alt="" loading="lazy" onerror="this.style.display='none'">`
+      : `<div class="history-thumb-placeholder" style="background:${platformColor(item.platform, 0.15)};color:${platformColor(item.platform, 1)}">${platformShort(item.platform)}</div>`;
+
+    const displayUrl = item.url.replace(/^https?:\/\//, '').replace(/^www\./, '');
+
+    return `<div class="history-item" onclick="loadFromHistory('${escapeAttr(item.url)}')" title="${escapeHtml(item.url)}">
+      ${thumbHtml}
+      <div class="history-info">
+        <div class="history-title">${escapeHtml(item.title)}</div>
+        <div class="history-url">${escapeHtml(truncate(displayUrl, 60))}</div>
+      </div>
+      <button class="history-delete" onclick="event.stopPropagation();deleteFromHistory('${escapeAttr(item.url)}')" title="Remove">✕</button>
+    </div>`;
+  }).join('');
+}
+
+function loadFromHistory(url) {
+  $('urlInput').value = url;
+  autoSelectBrowser(url);
+  fetchInfo();
+}
+
+function platformColor(platform, alpha) {
+  const map = {
+    youtube: `rgba(255,59,59,${alpha})`,
+    x_twitter: `rgba(29,155,240,${alpha})`,
+    instagram: `rgba(225,48,108,${alpha})`,
+    facebook: `rgba(24,119,242,${alpha})`,
+    tiktok: `rgba(254,44,85,${alpha})`,
+    bilibili: `rgba(0,161,214,${alpha})`,
+    douyin: `rgba(255,66,89,${alpha})`,
+    xiaohongshu: `rgba(255,36,66,${alpha})`,
+  };
+  return map[platform] || `rgba(136,136,136,${alpha})`;
+}
+
+function platformShort(platform) {
+  return { youtube:'YT', x_twitter:'X', instagram:'IG', facebook:'FB',
+           tiktok:'TT', bilibili:'B', douyin:'抖', xiaohongshu:'红' }[platform] || '?';
+}
+
+function escapeAttr(str) {
+  return String(str).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+}
+
 /* ── DOM helpers ─────────────────────────────────────────────────────────── */
 const $ = id => document.getElementById(id);
 const show = el => el.classList.remove('hidden');
@@ -14,6 +111,7 @@ const hide = el => el.classList.add('hidden');
 document.addEventListener('DOMContentLoaded', () => {
   loadOutputDir();
   setupQualityButtons();
+  renderHistory();
 
   $('urlInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') fetchInfo();
@@ -112,6 +210,7 @@ async function fetchInfo() {
       showError(data.error);
     } else {
       renderInfo(data);
+      addToHistory(url, data);
     }
   } catch (err) {
     showError('Could not reach the server. Is it running?');
