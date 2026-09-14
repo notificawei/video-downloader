@@ -68,6 +68,8 @@ SUPPORTED_PLATFORMS = {
     "bilibili": ["bilibili.com", "b23.tv"],
     "douyin": ["douyin.com", "v.douyin.com"],
     "xiaohongshu": ["xiaohongshu.com", "xhslink.com", "redbook.com"],
+    # WeChat Channels (via yt-dlp-patch plugin)
+    "wechat": ["weixin.qq.com/sph", "channels.weixin.qq.com", "finder.video.qq.com"],
 }
 
 QUALITY_PRESETS = {
@@ -212,6 +214,11 @@ class VideoDownloader:
 
         # Douyin / Xiaohongshu: disable playlist by default (share links are single videos)
         if platform in ("douyin", "xiaohongshu"):
+            opts["noplaylist"] = True
+
+        # WeChat Channels: requires Tencent cookies (from Chrome/Safari after
+        # visiting yuanbao.tencent.com or WeChat Web).
+        if platform == "wechat":
             opts["noplaylist"] = True
 
         if cookies_file and Path(cookies_file).exists():
