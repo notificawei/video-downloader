@@ -89,13 +89,15 @@ function platformColor(platform, alpha) {
     bilibili: `rgba(0,161,214,${alpha})`,
     douyin: `rgba(255,66,89,${alpha})`,
     xiaohongshu: `rgba(255,36,66,${alpha})`,
+    wechat: `rgba(7,193,96,${alpha})`,
   };
   return map[platform] || `rgba(136,136,136,${alpha})`;
 }
 
 function platformShort(platform) {
   return { youtube:'YT', x_twitter:'X', instagram:'IG', facebook:'FB',
-           tiktok:'TT', bilibili:'B', douyin:'抖', xiaohongshu:'红' }[platform] || '?';
+           tiktok:'TT', bilibili:'B', douyin:'抖', xiaohongshu:'红',
+           wechat:'微' }[platform] || '?';
 }
 
 function escapeAttr(str) {
@@ -173,7 +175,8 @@ function autoSelectBrowser(url) {
   const sel = document.getElementById('browserSelect');
   if (!sel || sel.value) return; // don't override if user already picked
   const needsCookies = ['youtube.com', 'youtu.be', 'douyin.com', 'v.douyin.com', 'bilibili.com', 'b23.tv',
-                        'instagram.com', 'facebook.com', 'fb.watch', 'tiktok.com', 'vm.tiktok.com'];
+                        'instagram.com', 'facebook.com', 'fb.watch', 'tiktok.com', 'vm.tiktok.com',
+                        'weixin.qq.com', 'channels.weixin.qq.com', 'finder.video.qq.com'];
   if (needsCookies.some(d => url.includes(d))) {
     // Pick Chrome if available, otherwise first real option
     const chrome = sel.querySelector('option[value="chrome"]');
@@ -406,7 +409,8 @@ function formatCount(n) {
 function platformLabel(p) {
   return { youtube: 'YouTube', x_twitter: 'X / Twitter', instagram: 'Instagram',
            facebook: 'Facebook', tiktok: 'TikTok',
-           bilibili: 'Bilibili', douyin: 'Douyin 抖音', xiaohongshu: '小红书 RED' }[p] || p;
+           bilibili: 'Bilibili', douyin: 'Douyin 抖音', xiaohongshu: '小红书 RED',
+           wechat: '微信视频号' }[p] || p;
 }
 
 function statusLabel(s) {
