@@ -57,27 +57,39 @@ def _find_plugin_dirs() -> list[str]:
 
     When the app runs as a launchd service the Python sys.path may not include
     all user/site-packages directories, so yt-dlp can miss installed plugins.
-    We find them explicitly via importlib and pass them through plugin_dirs.
+    We find them explicitly and pass them through the plugin_dirs ydl option.
     """
-    import importlib.util
     import sys
 
     dirs: list[str] = []
-    # Search every sys.path entry for a yt_dlp_plugins directory.
-    for base in sys.path:
-        candidate = Path(base) / "yt_dlp_plugins"
-        if candidate.is_dir() and str(base) not in dirs:
-            dirs.append(str(base))
 
-    # Also check common Homebrew Python site-packages paths.
-    for prefix in (
-        "/opt/homebrew/lib",
-        "/usr/local/lib",
-        str(Path.home() / "Library" / "Python"),
-    ):
-        for p in Path(prefix).glob("python*/site-packages") if Path(prefix).exists() else []:
-            if (p / "yt_dlp_plugins").is_dir() and str(p) not in dirs:
-                dirs.append(str(p))
+    def _add(p: Path) -> None:
+        s = str(p)
+        if p.is_dir() and s not in dirs:
+            dirs.append(s)
+
+    # 1. Every entry already in sys.path that has a yt_dlp_plugins sub-dir.
+    for base in sys.path:
+        if (Path(base) / "yt_dlp_plugins").is_dir():
+            _add(Path(base))
+
+    # 2. Common Homebrew system site-packages  (/opt/homebrew/lib/python3.x/site-packages)
+    for prefix in ("/opt/homebrew/lib", "/usr/local/lib"):
+        p = Path(prefix)
+        if p.exists():
+            for sp in p.glob("python*/site-packages"):
+                if (sp / "yt_dlp_plugins").is_dir():
+                    _add(sp)
+
+    # 3. macOS user site-packages installed by `pip --user` or `--break-system-packages`
+    #    Pattern: ~/Library/Python/<major.minor>/lib/python/site-packages
+    user_lib = Path.home() / "Library" / "Python"
+    if user_lib.exists():
+        for ver_dir in user_lib.iterdir():
+            sp = ver_dir / "lib" / "python" / "site-packages"
+            if (sp / "yt_dlp_plugins").is_dir():
+                _add(sp)
+
     return dirs
 
 
