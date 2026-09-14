@@ -52,11 +52,42 @@ def _find_node() -> Optional[str]:
     return None
 
 
+def _find_plugin_dirs() -> list[str]:
+    """Return parent directories that contain yt_dlp_plugins packages.
+
+    When the app runs as a launchd service the Python sys.path may not include
+    all user/site-packages directories, so yt-dlp can miss installed plugins.
+    We find them explicitly via importlib and pass them through plugin_dirs.
+    """
+    import importlib.util
+    import sys
+
+    dirs: list[str] = []
+    # Search every sys.path entry for a yt_dlp_plugins directory.
+    for base in sys.path:
+        candidate = Path(base) / "yt_dlp_plugins"
+        if candidate.is_dir() and str(base) not in dirs:
+            dirs.append(str(base))
+
+    # Also check common Homebrew Python site-packages paths.
+    for prefix in (
+        "/opt/homebrew/lib",
+        "/usr/local/lib",
+        str(Path.home() / "Library" / "Python"),
+    ):
+        for p in Path(prefix).glob("python*/site-packages") if Path(prefix).exists() else []:
+            if (p / "yt_dlp_plugins").is_dir() and str(p) not in dirs:
+                dirs.append(str(p))
+    return dirs
+
+
 _FFMPEG_LOCATION = _find_ffmpeg()
 _NODE_PATH = _find_node()
+_PLUGIN_DIRS = _find_plugin_dirs()
 
 log.info("ffmpeg: %s", _FFMPEG_LOCATION or "not found")
 log.info("node/bun: %s", _NODE_PATH or "not found")
+log.info("yt-dlp plugin dirs: %s", _PLUGIN_DIRS or "none")
 
 SUPPORTED_PLATFORMS = {
     "youtube": ["youtube.com", "youtu.be"],
@@ -180,6 +211,7 @@ class VideoDownloader:
             "outtmpl": str(out_dir / "%(uploader)s - %(title)s [%(id)s].%(ext)s"),
             "merge_output_format": "mp4",
             **({"ffmpeg_location": _FFMPEG_LOCATION} if _FFMPEG_LOCATION else {}),
+            **({"plugin_dirs": _PLUGIN_DIRS} if _PLUGIN_DIRS else {}),
             "proxy": "",  # bypass any inherited proxy env vars
             "noplaylist": True,
             "progress_hooks": [self._make_progress_hook(progress)],
@@ -230,7 +262,12 @@ class VideoDownloader:
 
     def get_info(self, url: str, cookies_from_browser: Optional[str] = None) -> dict:
         """Fetch video metadata without downloading."""
-        ydl_opts: dict = {"quiet": True, "no_warnings": True, "proxy": ""}
+        ydl_opts: dict = {
+            "quiet": True,
+            "no_warnings": True,
+            "proxy": "",
+            **({"plugin_dirs": _PLUGIN_DIRS} if _PLUGIN_DIRS else {}),
+        }
         if cookies_from_browser:
             ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
         platform = detect_platform(url)
