@@ -7,7 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>/opt/homebrew/bin/python3.13</string>
         <string>/Users/jiaweiwang/video downloader/app.py</string>
         <string>--port</string>
         <string>8080</string>
@@ -15,6 +15,15 @@
 
     <key>WorkingDirectory</key>
     <string>/Users/jiaweiwang/video downloader</string>
+
+    <!-- Ensure Homebrew binaries (node, ffmpeg, yt-dlp plugins) are visible -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/jiaweiwang</string>
+    </dict>
 
     <key>RunAtLoad</key>
     <true/>
