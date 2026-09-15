@@ -52,6 +52,38 @@ def _find_node() -> Optional[str]:
     return None
 
 
+def _find_wechat_cookie_file() -> Optional[str]:
+    """Return a Netscape cookie file containing Tencent cookies, if one exists.
+
+    Decrypting Chrome cookies needs macOS Keychain access, which a launchd
+    agent usually cannot obtain, so an exported cookie file is the reliable
+    way to authenticate WeChat Channels downloads.
+    """
+    for p in (
+        Path.home() / "yuanbao_cookies.txt",
+        Path.home() / ".config" / "savextube" / "yuanbao_cookies.txt",
+        Path.home() / "Desktop" / "yuanbao_cookies.txt",
+        Path(__file__).parent / "yuanbao_cookies.txt",
+    ):
+        if p.is_file():
+            return str(p)
+    return None
+
+
+def _prepare_wechat_cookies() -> Optional[str]:
+    """Point the WeChat plugin at a Tencent cookie file via its env var."""
+    cookie_file = _find_wechat_cookie_file()
+    if cookie_file:
+        os.environ["YUANBAO_COOKIE_FILE"] = cookie_file
+        log.info("WeChat: using Yuanbao cookie file %s", cookie_file)
+    else:
+        log.warning(
+            "WeChat: no Yuanbao cookie file found — falling back to browser "
+            "cookies, which often fail under launchd (no Keychain access)"
+        )
+    return cookie_file
+
+
 def _find_plugin_dirs() -> list[str]:
     """Return parent directories that contain yt_dlp_plugins packages.
 
@@ -264,6 +296,7 @@ class VideoDownloader:
         # visiting yuanbao.tencent.com or WeChat Web).
         if platform == "wechat":
             opts["noplaylist"] = True
+            _prepare_wechat_cookies()
 
         if cookies_file and Path(cookies_file).exists():
             opts["cookiefile"] = cookies_file
@@ -290,6 +323,8 @@ class VideoDownloader:
             ydl_opts["extractor_args"] = {
                 "youtube": {"player_client": ["mweb", "web", "android"]}
             }
+        elif platform == "wechat":
+            _prepare_wechat_cookies()
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
                 info = ydl.extract_info(url, download=False)
