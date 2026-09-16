@@ -87,6 +87,75 @@ def _prepare_wechat_cookies() -> Optional[str]:
     return cookie_file
 
 
+def _read_netscape_cookie_string(path: Path, domain_filter: str) -> str:
+    """Flatten a Netscape cookie file into a 'name=value; ...' header string."""
+    parts = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Netscape files mark HttpOnly entries with a comment-style prefix.
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        elif line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) < 7:
+            continue
+        domain, name, value = fields[0], fields[5], fields[6]
+        if domain_filter in domain.lower():
+            parts.append(f"{name}={value}")
+    return "; ".join(parts)
+
+
+def _load_douyin_cookie_string() -> Optional[str]:
+    """Return a Douyin cookie header from an exported cookie file, if present.
+
+    F2 needs a logged-in cookie to read a profile's post list. Reading it from
+    Chrome requires Keychain access that a launchd agent cannot obtain, so an
+    exported file is the dependable source.
+    """
+    for p in (
+        Path.home() / "douyin_cookies.txt",
+        Path.home() / "Desktop" / "douyin_cookies.txt",
+        Path(__file__).parent / "douyin_cookies.txt",
+    ):
+        if p.is_file():
+            cookie = _read_netscape_cookie_string(p, "douyin.com")
+            if cookie:
+                log.info("Douyin: using cookie file %s", p)
+                return cookie
+            log.warning("Douyin: %s contains no douyin.com cookies", p)
+    return None
+
+
+def _douyin_failure_message(
+    return_code: int,
+    saved_items: int,
+    errors: list[str],
+    had_cookie_file: bool,
+) -> str:
+    """Build an actionable message for a Douyin profile download failure."""
+    if saved_items == 0 and return_code == 0:
+        reason = "抖音接口未返回任何作品"
+    else:
+        reason = f"F2 退出码 {return_code}"
+
+    if not had_cookie_file:
+        advice = (
+            "缺少抖音登录 cookie。请在 Chrome 登录抖音后用 "
+            "「Get cookies.txt LOCALLY」扩展导出，保存为 ~/douyin_cookies.txt 再重试。"
+        )
+    else:
+        advice = (
+            "cookie 可能已过期或该主页无公开作品。请重新导出 "
+            "~/douyin_cookies.txt 后重试。"
+        )
+
+    detail = f"（{errors[-1]}）" if errors else ""
+    return f"抖音主页下载失败：{reason}{detail}。{advice}"
+
+
 def _find_plugin_dirs() -> list[str]:
     """Return parent directories that contain yt_dlp_plugins packages.
 
@@ -542,10 +611,18 @@ class VideoDownloader:
             "--max-counts", "0",
             "--page-counts", "20",
         ]
-        if cookies_from_browser:
+        cookie_string = _load_douyin_cookie_string()
+        if cookie_string:
+            command.extend(["--cookie", cookie_string])
+        elif cookies_from_browser:
+            log.warning(
+                "Douyin: no cookie file found — falling back to --auto-cookie, "
+                "which usually fails under launchd (no Keychain access)"
+            )
             command.extend(["--auto-cookie", cookies_from_browser])
 
         log.info("Starting Douyin profile download: %s", url)
+        recent_errors: list[str] = []
         try:
             process = subprocess.Popen(
                 command,
@@ -561,6 +638,8 @@ class VideoDownloader:
                 clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
                 if clean_line:
                     log.info("[f2] %s", clean_line)
+                    if "Error" in clean_line or "错误" in clean_line:
+                        recent_errors.append(clean_line)
                 current = {
                     p.resolve()
                     for p in self.output_dir.rglob("*")
@@ -572,11 +651,6 @@ class VideoDownloader:
                     progress.filename = f"已保存 {progress.completed_items} 个作品"
 
             return_code = process.wait()
-            if return_code != 0:
-                raise RuntimeError(
-                    f"抖音主页下载失败（F2 退出码 {return_code}）。"
-                    "请确认已在所选浏览器登录抖音，并关闭浏览器后重试。"
-                )
 
             after = {
                 p.resolve()
@@ -584,6 +658,16 @@ class VideoDownloader:
                 if p.is_file() and p.suffix.lower() in (".mp4", ".webm", ".jpg", ".jpeg", ".png")
             }
             progress.completed_items = len(after - before)
+
+            # Douyin rejects unauthenticated profile reads, and F2 does not
+            # always signal that through its exit code, so saving nothing is
+            # treated as a failure rather than reported as a finished download.
+            if return_code != 0 or progress.completed_items == 0:
+                raise RuntimeError(_douyin_failure_message(
+                    return_code, progress.completed_items, recent_errors,
+                    bool(cookie_string),
+                ))
+
             progress.filename = f"已保存 {progress.completed_items} 个作品"
             progress.percent = 100.0
             progress.status = "done"
