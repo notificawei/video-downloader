@@ -14,6 +14,7 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 | **Instagram** | Reels, posts, stories (may need cookies) |
 | **Facebook** | Public videos (may need cookies) |
 | **TikTok** | Videos without watermark |
+| **Douyin** | Single videos and full user-profile archives (cookies recommended) |
 
 ---
 
@@ -81,6 +82,15 @@ python3 cli.py "https://www.instagram.com/reel/..." --cookies ~/cookies.txt
 # Launch web UI from CLI
 python3 cli.py --web
 ```
+
+### Download every post from a Douyin profile
+
+In the web UI, paste a direct profile URL such as
+`https://www.douyin.com/user/...` or a profile share link from
+`https://v.douyin.com/...`. VideoGet detects profile URLs automatically and
+changes the action to **下载主页全部作品**. Keep the selected browser logged in
+to Douyin; closing that browser before starting the batch makes cookie access
+more reliable.
 
 ### Quality options
 

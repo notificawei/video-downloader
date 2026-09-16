@@ -280,6 +280,16 @@ body {
   color: var(--accent-light);
 }
 
+.profile-hint {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255,66,89,0.1);
+  color: #fda4af;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
 /* ── Link history ─────────────────────────────────────────────────────────── */
 .history-header {
   display: flex; align-items: center; justify-content: space-between;

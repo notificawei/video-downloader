@@ -267,6 +267,11 @@ function renderInfo(info) {
     show(likes);
   } else { hide(likes); }
 
+  const isProfile = Boolean(info.is_profile);
+  isProfile ? hide($('qualityRow')) : show($('qualityRow'));
+  isProfile ? show($('profileHint')) : hide($('profileHint'));
+  $('downloadBtn').textContent = isProfile ? '下载主页全部作品' : 'Download';
+
   show($('infoCard'));
 }
 
@@ -282,7 +287,12 @@ async function startDownload() {
     const res = await fetch('/api/download', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, quality, cookies_from_browser: getSelectedBrowser() }),
+      body: JSON.stringify({
+        url,
+        quality,
+        cookies_from_browser: getSelectedBrowser(),
+        download_profile: Boolean(state.currentInfo?.is_profile),
+      }),
     });
     const data = await res.json();
 
@@ -303,6 +313,8 @@ async function startDownload() {
       eta: '',
       filename: '',
       error: null,
+      is_batch: Boolean(state.currentInfo?.is_profile),
+      completed_items: 0,
     };
 
     show($('downloadsSection'));
@@ -357,9 +369,11 @@ function renderDownloads() {
     const barWidth = d.status === 'done' ? 100 : pct;
 
     const metaHtml = isActive
-      ? `<span>${d.speed || '–'}</span><span>ETA ${d.eta || '–'}</span><span>${pct.toFixed(1)}%</span>`
+      ? d.is_batch
+        ? `<span>批量下载中</span><span>已保存 ${d.completed_items || 0} 个作品</span>`
+        : `<span>${d.speed || '–'}</span><span>ETA ${d.eta || '–'}</span><span>${pct.toFixed(1)}%</span>`
       : d.status === 'done'
-      ? `<span style="color:var(--success)">✓ Saved to downloads folder</span>`
+      ? `<span style="color:var(--success)">✓ ${d.is_batch ? `已保存 ${d.completed_items || 0} 个作品` : 'Saved to downloads folder'}</span>`
       : '';
 
     const errHtml = d.error
