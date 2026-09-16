@@ -45,9 +45,22 @@ st.caption(
 )
 st.divider()
 
-generate_tab, scripts_tab = st.tabs(["Generate audio", "My Scripts"])
+if "main_tab" not in st.session_state:
+    st.session_state.main_tab = "Generate audio"
 
-with generate_tab:
+pending_tab = st.session_state.pop("pending_main_tab", None)
+if pending_tab is not None:
+    st.session_state.main_tab = pending_tab
+
+st.radio(
+    "Section",
+    ["Generate audio", "My Scripts"],
+    key="main_tab",
+    horizontal=True,
+    label_visibility="collapsed",
+)
+
+if st.session_state.main_tab == "Generate audio":
     st.text_area(
         "Script",
         key="generate_script",
@@ -102,7 +115,7 @@ with generate_tab:
             use_container_width=True,
         )
 
-with scripts_tab:
+else:
     st.caption("A simple place to keep scripts. Saving here does not generate audio.")
 
     scripts = st.session_state.scripts
@@ -184,7 +197,7 @@ with scripts_tab:
             st.warning("This script is empty.")
         else:
             st.session_state.pending_generate_script = body
-            st.success("Copied to Generate audio. Open that tab and hit generate.")
+            st.session_state.pending_main_tab = "Generate audio"
             st.rerun()
 
     if delete_clicked:
