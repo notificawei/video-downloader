@@ -108,6 +108,29 @@ def _read_netscape_cookie_string(path: Path, domain_filter: str) -> str:
     return "; ".join(parts)
 
 
+def _parse_cookie_file(path: Path, domain_filter: str) -> str:
+    """Read a cookie file in either Netscape or raw 'name=value; ...' format.
+
+    Browser extensions export Netscape files, but copying the Cookie request
+    header straight out of DevTools is the only option on machines where
+    extensions cannot be installed, so both layouts are accepted.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace").strip()
+    if not text:
+        return ""
+
+    # Netscape records are tab-separated; a pasted header never is.
+    if "\t" not in text:
+        pairs = [
+            part.strip()
+            for part in text.replace("\n", ";").split(";")
+            if "=" in part
+        ]
+        return "; ".join(pairs)
+
+    return _read_netscape_cookie_string(path, domain_filter)
+
+
 def _load_douyin_cookie_string() -> Optional[str]:
     """Return a Douyin cookie header from an exported cookie file, if present.
 
@@ -121,7 +144,7 @@ def _load_douyin_cookie_string() -> Optional[str]:
         Path(__file__).parent / "douyin_cookies.txt",
     ):
         if p.is_file():
-            cookie = _read_netscape_cookie_string(p, "douyin.com")
+            cookie = _parse_cookie_file(p, "douyin.com")
             if cookie:
                 log.info("Douyin: using cookie file %s", p)
                 return cookie
@@ -143,8 +166,9 @@ def _douyin_failure_message(
 
     if not had_cookie_file:
         advice = (
-            "缺少抖音登录 cookie。请在 Chrome 登录抖音后用 "
-            "「Get cookies.txt LOCALLY」扩展导出，保存为 ~/douyin_cookies.txt 再重试。"
+            "缺少抖音登录 cookie。请在 Chrome 登录抖音后按 F12 打开开发者工具，"
+            "在 Network 标签中复制任一请求的 Cookie 请求头，"
+            "保存为 ~/douyin_cookies.txt 再重试。"
         )
     else:
         advice = (
