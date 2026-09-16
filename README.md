@@ -1,6 +1,17 @@
-# Social Media Video Downloader
+# Social Media Video Downloader + Scratch VO
 
 Download videos from YouTube, Instagram, TikTok, Douyin, Facebook, X, Bilibili, and Xiaohongshu.
+
+Also includes **Scratch VO**: paste an English script, generate a free neural voiceover for editing, and keep drafts in **My Scripts**. Final narration should still be recorded by the speaker.
+
+## Scratch VO (web)
+
+```bash
+pip install -r requirements.txt
+streamlit run vo_app.py
+```
+
+Open the local URL Streamlit prints. Use **Generate audio** for MP3 scratch tracks, and **My Scripts** as a notepad for drafts. Speed defaults to **-5%** (a bit slower than stock TTS); move the slider if you need it faster or slower.
 
 ## Desktop App
 
@@ -32,8 +43,10 @@ git push -u origin main
 1. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub
 2. Click **New app**
 3. Select your `video-downloader` repository
-4. Set **Main file path** to `app.py`
+4. Set **Main file path** to `app.py` (video downloader) or `vo_app.py` (Scratch VO)
 5. Click **Deploy**
+
+You can deploy both as two Streamlit apps from the same repo by choosing a different main file each time. **My Scripts** is stored in `data/scripts.json` on the machine running the app (local runs persist; Streamlit Cloud may reset that file when the app sleeps).
 
 After ~2 minutes you'll get a link like:
 ```
