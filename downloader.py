@@ -8,15 +8,18 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+import requests
 import yt_dlp
 
 # Log to the same file launchd uses so errors are always visible.
 _LOG_FILE = Path.home() / "Library" / "Logs" / "videoget.log"
+_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -141,7 +144,7 @@ SUPPORTED_PLATFORMS = {
     "tiktok": ["tiktok.com", "vm.tiktok.com"],
     # Chinese platforms
     "bilibili": ["bilibili.com", "b23.tv"],
-    "douyin": ["douyin.com", "v.douyin.com"],
+    "douyin": ["douyin.com", "iesdouyin.com", "v.douyin.com"],
     "xiaohongshu": ["xiaohongshu.com", "xhslink.com", "redbook.com"],
     # WeChat Channels (via yt-dlp-patch plugin)
     "wechat": ["weixin.qq.com/sph", "channels.weixin.qq.com", "finder.video.qq.com"],
@@ -170,6 +173,37 @@ def sanitize_filename(name: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "_", name)
 
 
+def is_douyin_profile_url(url: str) -> bool:
+    """Return whether a URL identifies a Douyin user profile.
+
+    Douyin's share button often produces a v.douyin.com short URL, so resolve
+    that redirect before deciding whether it points to a profile or one post.
+    """
+    profile_pattern = (
+        r'https?://(?:www\.)?(?:douyin|iesdouyin)\.com/(?:share/)?user/'
+    )
+    if re.search(profile_pattern, url, flags=re.IGNORECASE):
+        return True
+    if "v.douyin.com/" not in url.lower():
+        return False
+
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 Chrome/130.0 Safari/537.36"
+                )
+            },
+            allow_redirects=True,
+            timeout=10,
+        )
+        return bool(re.search(profile_pattern, response.url, flags=re.IGNORECASE))
+    except requests.RequestException:
+        return False
+
+
 class DownloadProgress:
     def __init__(self):
         self.status = "idle"
@@ -180,6 +214,8 @@ class DownloadProgress:
         self.total_bytes = 0
         self.downloaded_bytes = 0
         self.error = None
+        self.is_batch = False
+        self.completed_items = 0
 
     def to_dict(self):
         return {
@@ -191,6 +227,8 @@ class DownloadProgress:
             "total_bytes": self.total_bytes,
             "downloaded_bytes": self.downloaded_bytes,
             "error": self.error,
+            "is_batch": self.is_batch,
+            "completed_items": self.completed_items,
         }
 
 
@@ -316,6 +354,23 @@ class VideoDownloader:
         if cookies_from_browser:
             ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
         platform = detect_platform(url)
+        if platform == "douyin" and is_douyin_profile_url(url):
+            profile_id = re.search(r'/(?:share/)?user/([^/?#]+)', url, re.IGNORECASE)
+            return {
+                "title": "抖音主页全部作品",
+                "uploader": f"主页 ID: {profile_id.group(1)}" if profile_id else "抖音用户主页",
+                "duration": None,
+                "thumbnail": "",
+                "description": "将自动分页下载该主页公开发布的所有视频和图文作品。",
+                "platform": "douyin",
+                "view_count": None,
+                "like_count": None,
+                "upload_date": "",
+                "formats": [],
+                "webpage_url": url,
+                "is_profile": True,
+            }
+
         if platform == "youtube":
             if _NODE_PATH:
                 runtime_name = "bun" if "bun" in _NODE_PATH else "node"
@@ -381,10 +436,16 @@ class VideoDownloader:
         download_id: str = "",
         cookies_file: Optional[str] = None,
         cookies_from_browser: Optional[str] = None,
+        download_profile: bool = False,
     ) -> DownloadProgress:
         platform = detect_platform(url)
         progress = DownloadProgress()
         progress.status = "starting"
+        download_profile = (
+            platform == "douyin"
+            and (download_profile or is_douyin_profile_url(url))
+        )
+        progress.is_batch = download_profile
 
         if not download_id:
             import uuid
@@ -394,6 +455,12 @@ class VideoDownloader:
             self._active_downloads[download_id] = progress
 
         def _run():
+            if download_profile:
+                self._run_douyin_profile_download(
+                    url, progress, cookies_from_browser=cookies_from_browser
+                )
+                return
+
             # Download into a private temp dir so yt-dlp can freely rename/merge,
             # then move the finished file into the real output directory.
             with tempfile.TemporaryDirectory(prefix="vdl_") as tmp_dir:
@@ -450,6 +517,80 @@ class VideoDownloader:
         thread.start()
 
         return progress, download_id
+
+    def _run_douyin_profile_download(
+        self,
+        url: str,
+        progress: DownloadProgress,
+        cookies_from_browser: Optional[str] = None,
+    ) -> None:
+        """Download every public post from a Douyin profile using F2."""
+        progress.status = "downloading"
+        progress.filename = "正在读取抖音主页作品列表…"
+
+        before = {
+            p.resolve()
+            for p in self.output_dir.rglob("*")
+            if p.is_file() and p.suffix.lower() in (".mp4", ".webm", ".jpg", ".jpeg", ".png")
+        }
+        command = [
+            sys.executable, "-m", "f2", "dy",
+            "--url", url,
+            "--mode", "post",
+            "--path", str(self.output_dir),
+            "--interval", "all",
+            "--max-counts", "0",
+            "--page-counts", "20",
+        ]
+        if cookies_from_browser:
+            command.extend(["--auto-cookie", cookies_from_browser])
+
+        log.info("Starting Douyin profile download: %s", url)
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+            assert process.stdout is not None
+            for line in process.stdout:
+                clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+                if clean_line:
+                    log.info("[f2] %s", clean_line)
+                current = {
+                    p.resolve()
+                    for p in self.output_dir.rglob("*")
+                    if p.is_file()
+                    and p.suffix.lower() in (".mp4", ".webm", ".jpg", ".jpeg", ".png")
+                }
+                progress.completed_items = len(current - before)
+                if progress.completed_items:
+                    progress.filename = f"已保存 {progress.completed_items} 个作品"
+
+            return_code = process.wait()
+            if return_code != 0:
+                raise RuntimeError(
+                    f"抖音主页下载失败（F2 退出码 {return_code}）。"
+                    "请确认已在所选浏览器登录抖音，并关闭浏览器后重试。"
+                )
+
+            after = {
+                p.resolve()
+                for p in self.output_dir.rglob("*")
+                if p.is_file() and p.suffix.lower() in (".mp4", ".webm", ".jpg", ".jpeg", ".png")
+            }
+            progress.completed_items = len(after - before)
+            progress.filename = f"已保存 {progress.completed_items} 个作品"
+            progress.percent = 100.0
+            progress.status = "done"
+        except Exception as e:
+            progress.status = "error"
+            progress.error = str(e)
+            log.exception("Douyin profile download failed for %s", url)
 
     def get_progress(self, download_id: str) -> Optional[dict]:
         with self._lock:

@@ -97,7 +97,7 @@
             </div>
 
             <!-- Quality selector -->
-            <div class="quality-row">
+            <div id="qualityRow" class="quality-row">
               <label class="quality-label">Quality</label>
               <div class="quality-options" id="qualityOptions">
                 <label class="quality-btn active" data-q="best">
@@ -123,6 +123,9 @@
               </div>
             </div>
 
+            <p id="profileHint" class="profile-hint hidden">
+              将自动分页下载该主页的所有公开作品。作品较多时请保持页面和服务运行。
+            </p>
             <button id="downloadBtn" class="btn btn-download" onclick="startDownload()">
               Download
             </button>

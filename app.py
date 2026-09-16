@@ -44,6 +44,7 @@ def api_download():
     quality = (data.get("quality") or "best").strip()
     cookies_file = (data.get("cookies_file") or "").strip() or None
     cookies_from_browser = (data.get("cookies_from_browser") or "").strip() or None
+    download_profile = bool(data.get("download_profile"))
 
     if not url:
         return jsonify({"error": "No URL provided"}), 400
@@ -58,6 +59,7 @@ def api_download():
         download_id=download_id,
         cookies_file=cookies_file,
         cookies_from_browser=cookies_from_browser,
+        download_profile=download_profile,
     )
 
     return jsonify({"download_id": did, "status": "started", "output_dir": downloader.output_path})
