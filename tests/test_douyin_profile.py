@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 from downloader import (
     DownloadProgress,
     VideoDownloader,
+    _parse_cookie_file,
     _read_netscape_cookie_string,
     is_douyin_profile_url,
 )
@@ -127,6 +128,26 @@ class DouyinProfileUrlTests(unittest.TestCase):
         self.assertIn("sessionid=abc123", cookie)
         self.assertIn("ttwid=def456", cookie)
         self.assertNotIn("ignored", cookie)
+
+    def test_pasted_cookie_header_is_accepted(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "douyin_cookies.txt"
+            path.write_text("sessionid=abc123; ttwid=def456\n", encoding="utf-8")
+            cookie = _parse_cookie_file(path, "douyin.com")
+
+        self.assertEqual(cookie, "sessionid=abc123; ttwid=def456")
+
+    def test_netscape_file_still_parsed_by_generic_reader(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "douyin_cookies.txt"
+            path.write_text(
+                "# Netscape HTTP Cookie File\n"
+                ".douyin.com\tTRUE\t/\tTRUE\t0\tsessionid\tabc123\n",
+                encoding="utf-8",
+            )
+            cookie = _parse_cookie_file(path, "douyin.com")
+
+        self.assertEqual(cookie, "sessionid=abc123")
 
 
 if __name__ == "__main__":

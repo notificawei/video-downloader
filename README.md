@@ -88,9 +88,19 @@ python3 cli.py --web
 In the web UI, paste a direct profile URL such as
 `https://www.douyin.com/user/...` or a profile share link from
 `https://v.douyin.com/...`. VideoGet detects profile URLs automatically and
-changes the action to **下载主页全部作品**. Keep the selected browser logged in
-to Douyin; closing that browser before starting the batch makes cookie access
-more reliable.
+changes the action to **下载主页全部作品**.
+
+Douyin rejects unauthenticated reads of a profile's post list, so save a
+logged-in cookie to `~/douyin_cookies.txt`. Two formats are accepted:
+
+- A Netscape cookie file exported by a browser extension.
+- The raw `Cookie` request header copied from Chrome DevTools, which needs no
+  extension: log in to douyin.com, press F12, open **Network**, reload, select
+  any douyin.com request, then copy the `Cookie` value from **Request
+  Headers** and run `pbpaste > ~/douyin_cookies.txt`.
+
+With that file in place the batch download no longer reads browser cookies, so
+Chrome can stay open.
 
 ### Quality options
 
