@@ -13,4 +13,4 @@ echo "  Launching web UI at http://127.0.0.1:$PORT"
 echo "  Press Ctrl+C to stop"
 echo ""
 
-python3 app.py --port "$PORT"
+/opt/homebrew/bin/python3.13 app.py --port "$PORT"
