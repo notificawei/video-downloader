@@ -5,7 +5,9 @@ import streamlit as st
 
 from tts_lib import (
     DEFAULT_RATE,
-    VOICES,
+    engine_label,
+    engine_name,
+    list_voices,
     load_scripts,
     save_scripts,
     slugify,
@@ -13,7 +15,7 @@ from tts_lib import (
 )
 
 st.set_page_config(
-    page_title="Scratch VO",
+    page_title="Scratch VO (offline)",
     page_icon="🎙️",
     layout="centered",
 )
@@ -38,11 +40,26 @@ if pending_library is not None:
     st.session_state.library_title = pending_library.get("title", "")
     st.session_state.library_body = pending_library.get("body", "")
 
+voices = list_voices()
+if isinstance(voices, dict):
+    voice_labels = list(voices.keys())
+    voice_ids = voices
+else:
+    voice_labels = list(voices)
+    voice_ids = {label: label for label in voice_labels}
+
 st.title("🎙️ Scratch VO")
 st.caption(
-    "Paste a script → generate a scratch English voiceover for editing. "
+    "Paste a script → generate a **fully offline** English scratch track on this computer. "
+    "Nothing is sent to Microsoft or any other cloud TTS. "
     "Keep drafts in **My Scripts**. Final VO still comes from your boss."
 )
+st.info(engine_label())
+if engine_name() == "none":
+    st.error(
+        "No offline speech engine found. On a Mac, the built-in `say` command is used. "
+        "Do not fall back to online tools for unpublished news scripts."
+    )
 st.divider()
 
 if "main_tab" not in st.session_state:
@@ -70,7 +87,7 @@ if st.session_state.main_tab == "Generate audio":
 
     col1, col2 = st.columns([1, 1])
     with col1:
-        voice_label = st.selectbox("Voice", list(VOICES.keys()))
+        voice_label = st.selectbox("Voice", voice_labels or ["(none)"])
     with col2:
         rate = st.slider(
             "Speed",
@@ -78,7 +95,7 @@ if st.session_state.main_tab == "Generate audio":
             max_value=40,
             value=DEFAULT_RATE,
             step=5,
-            help="0% is the voice default. Negative is slower, positive is faster.",
+            help="0% is about 165 words/minute. Negative is slower, positive is faster.",
         )
         st.caption(f"Current rate: **{rate:+d}%**")
 
@@ -88,35 +105,37 @@ if st.session_state.main_tab == "Generate audio":
         script = st.session_state.generate_script.strip()
         if not script:
             st.warning("Paste a script first.")
+        elif engine_name() == "none":
+            st.error("No offline TTS engine available.")
         else:
-            with st.spinner("Generating…"):
+            with st.spinner("Generating on this computer…"):
                 try:
                     out_dir = Path("/tmp/scratch-vo")
                     out_dir.mkdir(parents=True, exist_ok=True)
-                    filename = f"{slugify(script)}-{datetime.now().strftime('%H%M%S')}.mp3"
+                    filename = f"{slugify(script)}-{datetime.now().strftime('%H%M%S')}.wav"
                     out_path = out_dir / filename
-                    synthesize(script, VOICES[voice_label], rate, out_path)
+                    synthesize(script, voice_ids[voice_label], rate, out_path)
                     audio_bytes = out_path.read_bytes()
                     st.session_state.last_audio = {
                         "bytes": audio_bytes,
                         "name": filename,
                     }
-                    st.success("Done. Play below or save the MP3 for your timeline.")
+                    st.success("Done. Generated on this computer only — play or save the WAV.")
                 except Exception as e:
                     st.error(f"Generation failed: {str(e)[:240]}")
 
     if st.session_state.get("last_audio"):
-        st.audio(st.session_state.last_audio["bytes"], format="audio/mp3")
+        st.audio(st.session_state.last_audio["bytes"], format="audio/wav")
         st.download_button(
-            "💾 Save MP3",
+            "💾 Save WAV",
             data=st.session_state.last_audio["bytes"],
             file_name=st.session_state.last_audio["name"],
-            mime="audio/mpeg",
+            mime="audio/wav",
             use_container_width=True,
         )
 
 else:
-    st.caption("A simple place to keep scripts. Saving here does not generate audio.")
+    st.caption("A simple place to keep scripts. Saving here does not generate audio and does not go online.")
 
     scripts = st.session_state.scripts
     titles = ["＋ New script"] + [
@@ -217,8 +236,7 @@ else:
 st.divider()
 st.markdown(
     "<div style='text-align:center; color:gray; font-size:12px'>"
-    "Scratch track only · powered by "
-    "<a href='https://github.com/rany2/edge-tts' target='_blank'>edge-tts</a>"
+    "Offline scratch track · no cloud TTS · stay on localhost for unpublished news"
     "</div>",
     unsafe_allow_html=True,
 )

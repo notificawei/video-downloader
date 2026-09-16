@@ -2,16 +2,25 @@
 
 Download videos from YouTube, Instagram, TikTok, Douyin, Facebook, X, Bilibili, and Xiaohongshu.
 
-Also includes **Scratch VO**: paste an English script, generate a free neural voiceover for editing, and keep drafts in **My Scripts**. Final narration should still be recorded by the speaker.
+Also includes **Scratch VO**: paste an English script, generate an **offline** scratch voiceover for editing, and keep drafts in **My Scripts**. Final narration should still be recorded by the speaker.
 
-## Scratch VO (web)
+## Scratch VO (offline, local only)
+
+This path does **not** use Microsoft Edge TTS or any other cloud speech API. On a Mac it uses the built-in `say` command, so the script stays on your computer.
 
 ```bash
 pip install -r requirements.txt
-streamlit run vo_app.py
+python3 -m streamlit run vo_app.py
 ```
 
-Open the local URL Streamlit prints. Use **Generate audio** for MP3 scratch tracks, and **My Scripts** as a notepad for drafts. Speed defaults to **-5%** (a bit slower than stock TTS); move the slider if you need it faster or slower.
+Open the **local** URL Streamlit prints (`http://localhost:8501`). Do **not** deploy this to Streamlit Cloud and do **not** use a public tunnel if the script is unpublished news.
+
+- **Generate audio** writes a WAV on this machine
+- **My Scripts** stores drafts in `data/scripts.json` on this machine
+- Speed defaults to **-5%** (about 165 words/minute at 0%)
+- For better Mac voices: System Settings → Accessibility → Spoken Content → download an English voice while online, then you can generate fully offline
+
+If `streamlit` is not on your PATH, keep using `python3 -m streamlit`.
 
 ## Desktop App
 
