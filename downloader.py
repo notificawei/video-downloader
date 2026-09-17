@@ -152,6 +152,107 @@ def _load_douyin_cookie_string() -> Optional[str]:
     return None
 
 
+_VIDEO_SUFFIXES = (".mp4", ".webm", ".mkv", ".mov", ".flv")
+_AUDIO_SUFFIXES = (".m4a", ".mp3", ".aac", ".opus")
+
+
+def _ffmpeg_binary() -> str:
+    return shutil.which("ffmpeg") or (
+        str(Path(_FFMPEG_LOCATION) / "ffmpeg") if _FFMPEG_LOCATION else "ffmpeg"
+    )
+
+
+def _ffprobe_binary() -> str:
+    return shutil.which("ffprobe") or (
+        str(Path(_FFMPEG_LOCATION) / "ffprobe") if _FFMPEG_LOCATION else "ffprobe"
+    )
+
+
+_H264_ARGS = [
+    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+    "-c:a", "aac", "-b:a", "192k",
+    "-movflags", "+faststart",
+]
+
+
+def _log_ffmpeg_failure(name: str, result: subprocess.CompletedProcess) -> None:
+    stderr = (result.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+    log.error(
+        "ffmpeg failed for %s (exit %s): %s",
+        name, result.returncode, stderr[-1] if stderr else "no output",
+    )
+
+
+def _video_codec(path: Path) -> str:
+    """Return the first video stream's codec name, or '' if it cannot be read."""
+    try:
+        result = subprocess.run(
+            [
+                _ffprobe_binary(), "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path),
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        # Probing is best effort; an unreadable codec just means no transcode.
+        log.warning("Could not probe codec for %s", path.name)
+        return ""
+    return result.stdout.strip().lower()
+
+
+def _save_media_file(src: Path, output_dir: Path) -> Optional[Path]:
+    """Move one finished download into output_dir, normalising video codecs.
+
+    Premiere Pro and QuickTime reject several container/codec combinations
+    that Douyin and YouTube serve, so video is re-encoded to H.264/AAC MP4.
+    Audio keeps its own container because it has no video stream to convert.
+    """
+    suffix = src.suffix.lower()
+    if suffix in _AUDIO_SUFFIXES:
+        dest = output_dir / src.name
+        shutil.move(str(src), str(dest))
+        return dest
+    if suffix not in _VIDEO_SUFFIXES:
+        return None
+
+    dest = output_dir / src.with_suffix(".mp4").name
+    result = subprocess.run(
+        [_ffmpeg_binary(), "-y", "-i", str(src), *_H264_ARGS, str(dest)],
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        return dest
+
+    # Keep the real container on failure. Renaming a non-MP4 file to .mp4
+    # yields a file whose extension lies about its contents, which is what
+    # makes it refuse to open in QuickTime and Premiere Pro.
+    _log_ffmpeg_failure(src.name, result)
+    if dest.exists():
+        dest.unlink()
+    fallback = output_dir / src.name
+    shutil.move(str(src), str(fallback))
+    return fallback
+
+
+def _transcode_to_h264_in_place(path: Path) -> bool:
+    """Re-encode a file to H.264 MP4, replacing it. Returns whether it worked."""
+    tmp_out = path.with_name(f"{path.stem}.h264tmp.mp4")
+    result = subprocess.run(
+        [_ffmpeg_binary(), "-y", "-i", str(path), *_H264_ARGS, str(tmp_out)],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        _log_ffmpeg_failure(path.name, result)
+        if tmp_out.exists():
+            tmp_out.unlink()
+        return False
+
+    final = path.with_suffix(".mp4")
+    path.unlink()
+    tmp_out.replace(final)
+    return True
+
+
 def _douyin_failure_message(
     return_code: int,
     saved_items: int,
@@ -571,29 +672,10 @@ class VideoDownloader:
                     # Re-encode to H.264/AAC for universal compatibility
                     # (QuickTime, Premiere Pro, VLC, etc.)
                     progress.status = "processing"
-                    ffmpeg = shutil.which("ffmpeg") or (
-                        str(Path(_FFMPEG_LOCATION) / "ffmpeg") if _FFMPEG_LOCATION else "ffmpeg"
-                    )
                     for src in sorted(Path(tmp_dir).iterdir()):
-                        if src.suffix not in (".mp4", ".m4a", ".mp3", ".webm", ".mkv"):
-                            continue
-                        dest = self.output_dir / src.with_suffix(".mp4").name
-                        result = subprocess.run(
-                            [
-                                ffmpeg, "-y", "-i", str(src),
-                                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                                "-c:a", "aac", "-b:a", "192k",
-                                "-movflags", "+faststart",
-                                str(dest),
-                            ],
-                            capture_output=True,
-                        )
-                        if result.returncode == 0:
-                            progress.filename = dest.name
-                        else:
-                            # Fallback: just move as-is if ffmpeg fails
-                            shutil.move(str(src), str(dest))
-                            progress.filename = dest.name
+                        saved = _save_media_file(src, self.output_dir)
+                        if saved:
+                            progress.filename = saved.name
 
                     progress.status = "done"
                     progress.percent = 100.0
@@ -692,6 +774,14 @@ class VideoDownloader:
                     bool(cookie_string),
                 ))
 
+            progress.status = "processing"
+            try:
+                self._normalise_batch_videos(after - before, progress)
+            except Exception:
+                # The posts are already on disk, so a transcoding problem must
+                # not discard an otherwise successful batch download.
+                log.exception("Post-download transcoding failed for %s", url)
+
             progress.filename = f"已保存 {progress.completed_items} 个作品"
             progress.percent = 100.0
             progress.status = "done"
@@ -699,6 +789,24 @@ class VideoDownloader:
             progress.status = "error"
             progress.error = str(e)
             log.exception("Douyin profile download failed for %s", url)
+
+    def _normalise_batch_videos(
+        self, new_files: set[Path], progress: DownloadProgress
+    ) -> None:
+        """Re-encode HEVC posts so Premiere Pro and QuickTime can open them.
+
+        F2 saves Douyin's originals untouched, and Douyin serves a lot of
+        HEVC/H.265, which Premiere Pro often refuses. H.264 files are left
+        alone so a large batch is not needlessly re-encoded.
+        """
+        for path in sorted(new_files):
+            if not path.is_file() or path.suffix.lower() not in _VIDEO_SUFFIXES:
+                continue
+            if _video_codec(path) not in ("hevc", "h265"):
+                continue
+            progress.filename = f"正在转码 {path.name}"
+            if not _transcode_to_h264_in_place(path):
+                log.warning("Kept original HEVC file: %s", path.name)
 
     def get_progress(self, download_id: str) -> Optional[dict]:
         with self._lock:
