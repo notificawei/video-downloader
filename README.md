@@ -8,12 +8,30 @@ Also includes **Scratch VO**: paste an English script, generate an **offline** s
 
 This path does **not** use Microsoft Edge TTS or any other cloud speech API. On a Mac it uses the built-in `say` command, so the script stays on your computer.
 
+### Always-on install (recommended, no terminal to keep open)
+
+```bash
+bash install_autostart.sh
+```
+
+This registers a macOS login item, so the app runs in the background and starts again after a reboot. It is always at `http://localhost:8501` — bookmark that. It listens on `127.0.0.1` only, so nothing on the network can reach it.
+
+To stop it and remove the login item:
+
+```bash
+bash uninstall_autostart.sh
+```
+
+### Run it manually instead
+
 ```bash
 pip install -r requirements.txt
 python3 -m streamlit run vo_app.py
 ```
 
-Open the **local** URL Streamlit prints (`http://localhost:8501`). Do **not** deploy this to Streamlit Cloud and do **not** use a public tunnel if the script is unpublished news.
+This only stays up while that terminal window is running.
+
+Do **not** deploy this to Streamlit Cloud and do **not** use a public tunnel if the script is unpublished news.
 
 - **Generate audio** writes a WAV on this machine
 - **My Scripts** stores drafts in `data/scripts.json` on this machine
