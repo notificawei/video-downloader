@@ -19,7 +19,12 @@ echo "Installing Scratch VO from: $APP_DIR"
 
 if ! "$PYTHON_BIN" -c "import streamlit" >/dev/null 2>&1; then
     echo "Installing Streamlit…"
-    "$PYTHON_BIN" -m pip install --user -q -r "$APP_DIR/requirements.txt"
+    if ! "$PYTHON_BIN" -m pip install --user -q -r "$APP_DIR/requirements-vo.txt"; then
+        echo
+        echo "Could not install Streamlit. Try running this line by itself:"
+        echo "  $PYTHON_BIN -m pip install --user streamlit"
+        exit 1
+    fi
 fi
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
@@ -73,6 +78,11 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 
-echo "The app did not answer on port $PORT. Check the log:"
-echo "  $LOG_DIR/scratch-vo.err.log"
+echo
+echo "The app did not answer on port $PORT. Last lines of the error log:"
+echo "---"
+tail -n 20 "$LOG_DIR/scratch-vo.err.log" 2>/dev/null || echo "(no error log was written)"
+echo "---"
+echo "If macOS asked about a new background item, allow it in"
+echo "System Settings > General > Login Items & Extensions, then run this installer again."
 exit 1

@@ -22,6 +22,20 @@ To stop it and remove the login item:
 bash uninstall_autostart.sh
 ```
 
+### `ERR_CONNECTION_REFUSED` on localhost:8501
+
+That means nothing is listening on the port — the app is not running. Run the checker:
+
+```bash
+bash check_vo.sh
+```
+
+It reports whether the files, Streamlit, the login item, and the port are each OK, and prints the last errors. Common causes:
+
+- Never installed as a login item → `bash install_autostart.sh`
+- macOS blocked the new background item → allow it in **System Settings → General → Login Items & Extensions**, then re-run the installer
+- Streamlit missing for the `python3` in use → `python3 -m pip install --user streamlit`
+
 ### Run it manually instead
 
 ```bash
