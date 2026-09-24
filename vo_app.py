@@ -7,6 +7,7 @@ from tts_lib import (
     DEFAULT_RATE,
     engine_label,
     engine_name,
+    has_high_quality_voice,
     list_voices,
     load_scripts,
     save_scripts,
@@ -40,13 +41,8 @@ if pending_library is not None:
     st.session_state.library_title = pending_library.get("title", "")
     st.session_state.library_body = pending_library.get("body", "")
 
-voices = list_voices()
-if isinstance(voices, dict):
-    voice_labels = list(voices.keys())
-    voice_ids = voices
-else:
-    voice_labels = list(voices)
-    voice_ids = {label: label for label in voice_labels}
+voice_ids = list_voices()
+voice_labels = list(voice_ids.keys())
 
 st.title("🎙️ Scratch VO")
 st.caption(
@@ -59,6 +55,13 @@ if engine_name() == "none":
     st.error(
         "No offline speech engine found. On a Mac, the built-in `say` command is used. "
         "Do not fall back to online tools for unpublished news scripts."
+    )
+elif engine_name() == "macos_say" and not has_high_quality_voice():
+    st.warning(
+        "Only basic voices are installed, which is why they sound robotic. "
+        "Download better ones in **System Settings → Accessibility → Spoken Content → "
+        "System Voice → Manage Voices**, and pick any English voice marked "
+        "**Premium** or **Enhanced**. The download happens once; generating stays offline."
     )
 st.divider()
 

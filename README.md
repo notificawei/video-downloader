@@ -50,7 +50,12 @@ Do **not** deploy this to Streamlit Cloud and do **not** use a public tunnel if 
 - **Generate audio** writes a WAV on this machine
 - **My Scripts** stores drafts in `data/scripts.json` on this machine
 - Speed defaults to **-5%** (about 165 words/minute at 0%)
-- For better Mac voices: System Settings → Accessibility → Spoken Content → download an English voice while online, then you can generate fully offline
+
+### Voices sound robotic?
+
+macOS ships only compact voices by default. Download better ones in **System Settings → Accessibility → Spoken Content → System Voice → Manage Voices** and pick English voices marked **Premium** (best) or **Enhanced**. The download is one-time; generating stays offline.
+
+The voice list hides macOS novelty voices (Bells, Zarvox, Bubbles and friends) and sorts Premium first, then Enhanced, then basic.
 
 If `streamlit` is not on your PATH, keep using `python3 -m streamlit`.
 

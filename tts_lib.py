@@ -58,21 +58,90 @@ def engine_label():
     return "No offline TTS engine found"
 
 
+# macOS ships joke voices alongside the real ones; they are useless for a VO track.
+NOVELTY_VOICES = {
+    "albert", "bad news", "bahh", "bells", "boing", "bubbles", "cellos",
+    "deranged", "eddy", "flo", "good news", "grandma", "grandpa", "jester",
+    "junior", "kathy", "organ", "princess", "ralph", "reed", "rocko", "sandy",
+    "shelley", "superstar", "trinoids", "whisper", "wobble", "zarvox",
+}
+
+# Natural-sounding narration voices, best first.
+PREFERRED_VOICES = [
+    "ava", "allison", "samantha", "susan", "zoe", "evan", "nathan", "joelle",
+    "tom", "alex", "serena", "stephanie", "daniel", "oliver", "kate", "fiona",
+    "moira", "karen", "matilda", "victoria", "tessa", "rishi", "veena",
+]
+
+
 def _parse_say_voices(raw):
     voices = []
     seen = set()
     for line in raw.splitlines():
-        match = re.match(r"^(\S.*?)\s+([a-z]{2}_[A-Z]{2}|en_US|en_GB|en_AU|en_IN)\s+", line)
+        match = re.match(r"^(\S.*?)\s+([A-Za-z]{2}[_-][A-Za-z]+)(?:\s|$)", line)
         if not match:
             continue
         voice, locale = match.group(1).strip(), match.group(2)
         if not locale.lower().startswith("en"):
             continue
-        if voice in seen:
+        if voice.lower() in seen:
             continue
-        seen.add(voice)
+        seen.add(voice.lower())
         voices.append(voice)
     return voices
+
+
+def _voice_quality(voice):
+    lowered = voice.lower()
+    if "premium" in lowered:
+        return 0
+    if "enhanced" in lowered:
+        return 1
+    return 2
+
+
+def _base_voice_name(voice):
+    """Strip trailing parentheticals like '(Premium)' or '(English (US))'."""
+    name = voice.strip()
+    while name.endswith(")"):
+        depth = 0
+        for i in range(len(name) - 1, -1, -1):
+            if name[i] == ")":
+                depth += 1
+            elif name[i] == "(":
+                depth -= 1
+                if depth == 0:
+                    name = name[:i].strip()
+                    break
+        else:
+            break
+    return name
+
+
+def _rank_say_voices(voices):
+    usable = [v for v in voices if _base_voice_name(v).lower() not in NOVELTY_VOICES]
+    if not usable:
+        usable = voices
+
+    def sort_key(voice):
+        base = _base_voice_name(voice).lower()
+        try:
+            preference = PREFERRED_VOICES.index(base)
+        except ValueError:
+            preference = len(PREFERRED_VOICES)
+        return (_voice_quality(voice), preference, base)
+
+    return sorted(usable, key=sort_key)
+
+
+def _say_voice_label(voice):
+    quality = _voice_quality(voice)
+    base = _base_voice_name(voice)
+    if quality == 0:
+        return f"{base} — best quality"
+    if quality == 1:
+        return f"{base} — better quality"
+    return f"{base} — basic"
 
 
 def list_voices():
@@ -81,24 +150,17 @@ def list_voices():
         try:
             raw = subprocess.check_output(["say", "-v", "?"], text=True, stderr=subprocess.STDOUT)
         except (OSError, subprocess.CalledProcessError):
-            return ["Samantha", "Alex"]
-        voices = _parse_say_voices(raw)
-        preferred = [
-            "Samantha",
-            "Ava",
-            "Zoe",
-            "Allison",
-            "Susan",
-            "Victoria",
-            "Fiona",
-            "Moira",
-            "Kate",
-            "Daniel",
-            "Alex",
-        ]
-        ordered = [v for v in preferred if v in voices]
-        ordered.extend(v for v in voices if v not in ordered)
-        return ordered or ["Samantha"]
+            return {"Samantha — basic": "Samantha"}
+        ranked = _rank_say_voices(_parse_say_voices(raw))
+        if not ranked:
+            return {"Samantha — basic": "Samantha"}
+        labels = {}
+        for voice in ranked:
+            label = _say_voice_label(voice)
+            if label in labels:
+                label = f"{label} ({voice})"
+            labels[label] = voice
+        return labels
     if name == "espeak":
         return {
             "English US": "en-us",
@@ -106,6 +168,13 @@ def list_voices():
             "English": "en",
         }
     return {}
+
+
+def has_high_quality_voice():
+    voices = list_voices()
+    if engine_name() != "macos_say":
+        return False
+    return any(_voice_quality(v) < 2 for v in voices.values())
 
 
 def _espeak_bin():
