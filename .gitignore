@@ -1,0 +1,8 @@
+data/scripts.json
+voices/
+*.onnx
+*.onnx.json
+__pycache__/
+.streamlit/secrets.toml
+*.mp3
+.venv/

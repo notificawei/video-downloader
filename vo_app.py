@@ -1,0 +1,306 @@
+from datetime import datetime
+from pathlib import Path
+
+import streamlit as st
+
+from tts_lib import (
+    DEFAULT_PIPER_VOICE,
+    DEFAULT_RATE,
+    PIPER_VOICES,
+    download_piper_voice,
+    engine_label,
+    engine_name,
+    has_high_quality_voice,
+    installed_piper_voices,
+    list_voices,
+    load_scripts,
+    piper_available,
+    rate_to_wpm,
+    save_scripts,
+    slugify,
+    synthesize,
+    wav_duration,
+)
+
+st.set_page_config(
+    page_title="Scratch VO (offline)",
+    page_icon="🎙️",
+    layout="centered",
+)
+
+if "scripts" not in st.session_state:
+    st.session_state.scripts = load_scripts()
+if "selected_script_id" not in st.session_state:
+    st.session_state.selected_script_id = None
+if "generate_script" not in st.session_state:
+    st.session_state.generate_script = ""
+if "library_title" not in st.session_state:
+    st.session_state.library_title = ""
+if "library_body" not in st.session_state:
+    st.session_state.library_body = ""
+
+pending_generate = st.session_state.pop("pending_generate_script", None)
+if pending_generate is not None:
+    st.session_state.generate_script = pending_generate
+
+pending_library = st.session_state.pop("pending_library", None)
+if pending_library is not None:
+    st.session_state.library_title = pending_library.get("title", "")
+    st.session_state.library_body = pending_library.get("body", "")
+
+voice_ids = list_voices()
+voice_labels = list(voice_ids.keys())
+
+st.title("🎙️ Scratch VO")
+st.caption(
+    "Paste a script → generate a **fully offline** English scratch track on this computer. "
+    "Nothing is sent to Microsoft or any other cloud TTS. "
+    "Keep drafts in **My Scripts**. Final VO still comes from your boss."
+)
+engine = engine_name()
+st.info(engine_label())
+
+if engine == "none":
+    st.error(
+        "No offline speech engine found. On a Mac, the built-in `say` command is used. "
+        "Do not fall back to online tools for unpublished news scripts."
+    )
+elif engine != "piper":
+    st.warning(
+        "These are the built-in system voices, which is why they sound robotic. "
+        "Open **Add better voices** below to install a neural voice that also runs offline."
+    )
+    if engine == "macos_say" and not has_high_quality_voice():
+        st.caption(
+            "You can also upgrade the macOS voices in System Settings → Accessibility → "
+            "Spoken Content → System Voice → Manage Voices (pick one marked Premium or Enhanced)."
+        )
+
+with st.expander("Add better voices", expanded=(engine != "piper")):
+    st.caption(
+        "These neural voices sound far better than the built-in ones and run entirely on "
+        "this computer. Downloading fetches a voice model file only — **your script is "
+        "never uploaded**. After the download you can work offline."
+    )
+    if not piper_available():
+        st.error(
+            "The neural voice engine is not installed yet. Run this once in Terminal, "
+            "then reload this page:\n\n```\npython3 -m pip install --user piper-tts\n```"
+        )
+    else:
+        installed = set(installed_piper_voices())
+        for label in PIPER_VOICES:
+            row_l, row_r = st.columns([3, 1])
+            with row_l:
+                if label in installed:
+                    st.markdown(f"**{label}** ✅ installed")
+                else:
+                    st.markdown(label)
+            with row_r:
+                if label in installed:
+                    st.button("Installed", key=f"dl-{label}", disabled=True, use_container_width=True)
+                elif st.button("Download", key=f"dl-{label}", use_container_width=True):
+                    with st.spinner(f"Downloading {label}… (about 60–110 MB, one time)"):
+                        try:
+                            download_piper_voice(label)
+                            st.success(f"{label} is ready.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Download failed: {str(e)[:200]}")
+        if not installed:
+            st.caption(f"Not sure which one? **{DEFAULT_PIPER_VOICE}** is a good default.")
+
+st.divider()
+
+if "main_tab" not in st.session_state:
+    st.session_state.main_tab = "Generate audio"
+
+pending_tab = st.session_state.pop("pending_main_tab", None)
+if pending_tab is not None:
+    st.session_state.main_tab = pending_tab
+
+st.radio(
+    "Section",
+    ["Generate audio", "My Scripts"],
+    key="main_tab",
+    horizontal=True,
+    label_visibility="collapsed",
+)
+
+if st.session_state.main_tab == "Generate audio":
+    st.text_area(
+        "Script",
+        key="generate_script",
+        height=260,
+        placeholder="Paste the English script here…",
+    )
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        voice_label = st.selectbox("Voice", voice_labels or ["(none)"])
+    with col2:
+        rate = st.slider(
+            "Speed",
+            min_value=-40,
+            max_value=40,
+            value=DEFAULT_RATE,
+            step=1,
+            help="0% is about 165 words/minute. Negative is slower, positive is faster. "
+            "Use the arrow keys for 1% steps.",
+        )
+        st.caption(f"Current rate: **{rate:+d}%** · about {rate_to_wpm(rate)} words/min")
+
+    generate_clicked = st.button("🎧 Generate audio", type="primary", use_container_width=True)
+
+    if generate_clicked:
+        script = st.session_state.generate_script.strip()
+        if not script:
+            st.warning("Paste a script first.")
+        elif engine_name() == "none":
+            st.error("No offline TTS engine available.")
+        else:
+            with st.spinner("Generating on this computer…"):
+                try:
+                    out_dir = Path("/tmp/scratch-vo")
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    filename = f"{slugify(script)}-{datetime.now().strftime('%H%M%S')}.wav"
+                    out_path = out_dir / filename
+                    synthesize(script, voice_ids[voice_label], rate, out_path)
+                    audio_bytes = out_path.read_bytes()
+                    st.session_state.last_audio = {
+                        "bytes": audio_bytes,
+                        "name": filename,
+                        "seconds": wav_duration(out_path),
+                        "rate": rate,
+                    }
+                    st.success("Done. Generated on this computer only — play or save the WAV.")
+                except Exception as e:
+                    st.error(f"Generation failed: {str(e)[:240]}")
+
+    if st.session_state.get("last_audio"):
+        last = st.session_state.last_audio
+        seconds = last.get("seconds")
+        if seconds:
+            minutes, secs = divmod(seconds, 60)
+            clock = f"{int(minutes)}:{secs:04.1f}" if minutes else f"{secs:.2f}s"
+            st.metric("Clip length", clock, help="Match this against your picture edit.")
+            if last.get("rate") is not None:
+                st.caption(
+                    f"Generated at {last['rate']:+d}%. Nudge the speed by 1% and "
+                    "regenerate — the same script and speed always give the same length."
+                )
+        st.audio(st.session_state.last_audio["bytes"], format="audio/wav")
+        st.download_button(
+            "💾 Save WAV",
+            data=st.session_state.last_audio["bytes"],
+            file_name=st.session_state.last_audio["name"],
+            mime="audio/wav",
+            use_container_width=True,
+        )
+
+else:
+    st.caption("A simple place to keep scripts. Saving here does not generate audio and does not go online.")
+
+    scripts = st.session_state.scripts
+    titles = ["＋ New script"] + [
+        s.get("title") or "(untitled)" for s in scripts
+    ]
+    selected_index = 0
+    if st.session_state.selected_script_id:
+        for i, s in enumerate(scripts):
+            if s["id"] == st.session_state.selected_script_id:
+                selected_index = i + 1
+                break
+
+    choice = st.selectbox("Saved scripts", titles, index=selected_index)
+    if choice == "＋ New script":
+        if st.session_state.selected_script_id is not None:
+            st.session_state.selected_script_id = None
+            st.session_state.pending_library = {"title": "", "body": ""}
+            st.rerun()
+    else:
+        chosen = scripts[titles.index(choice) - 1]
+        if st.session_state.selected_script_id != chosen["id"]:
+            st.session_state.selected_script_id = chosen["id"]
+            st.session_state.pending_library = {
+                "title": chosen.get("title", ""),
+                "body": chosen.get("body", ""),
+            }
+            st.rerun()
+
+    st.text_input("Title", key="library_title", placeholder="Episode 12 — intro")
+    st.text_area(
+        "Script",
+        key="library_body",
+        height=280,
+        placeholder="Keep the latest draft here while the cut keeps changing…",
+    )
+
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        save_clicked = st.button("💾 Save script", type="primary", use_container_width=True)
+    with b2:
+        use_clicked = st.button("➡️ Use in Generate", use_container_width=True)
+    with b3:
+        delete_clicked = st.button("🗑️ Delete", use_container_width=True)
+
+    if save_clicked:
+        title = st.session_state.library_title.strip()
+        body = st.session_state.library_body.strip()
+        if not title and not body:
+            st.warning("Add a title or some script text before saving.")
+        else:
+            now = datetime.now().isoformat(timespec="seconds")
+            if st.session_state.selected_script_id:
+                for s in st.session_state.scripts:
+                    if s["id"] == st.session_state.selected_script_id:
+                        s["title"] = title or "(untitled)"
+                        s["body"] = body
+                        s["updated_at"] = now
+                        break
+            else:
+                new_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+                st.session_state.scripts.insert(
+                    0,
+                    {
+                        "id": new_id,
+                        "title": title or "(untitled)",
+                        "body": body,
+                        "updated_at": now,
+                    },
+                )
+                st.session_state.selected_script_id = new_id
+            save_scripts(st.session_state.scripts)
+            st.success("Saved.")
+            st.rerun()
+
+    if use_clicked:
+        body = st.session_state.library_body.strip()
+        if not body:
+            st.warning("This script is empty.")
+        else:
+            st.session_state.pending_generate_script = body
+            st.session_state.pending_main_tab = "Generate audio"
+            st.rerun()
+
+    if delete_clicked:
+        sid = st.session_state.selected_script_id
+        if not sid:
+            st.warning("Nothing to delete — this is a new script.")
+        else:
+            st.session_state.scripts = [
+                s for s in st.session_state.scripts if s["id"] != sid
+            ]
+            save_scripts(st.session_state.scripts)
+            st.session_state.selected_script_id = None
+            st.session_state.pending_library = {"title": "", "body": ""}
+            st.success("Deleted.")
+            st.rerun()
+
+st.divider()
+st.markdown(
+    "<div style='text-align:center; color:gray; font-size:12px'>"
+    "Offline scratch track · no cloud TTS · stay on localhost for unpublished news"
+    "</div>",
+    unsafe_allow_html=True,
+)
