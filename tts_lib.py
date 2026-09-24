@@ -30,6 +30,16 @@ def save_scripts(scripts):
     )
 
 
+def wav_duration(path):
+    import wave
+
+    try:
+        with wave.open(str(path)) as handle:
+            return handle.getnframes() / float(handle.getframerate())
+    except Exception:
+        return None
+
+
 def slugify(text, fallback="scratch"):
     words = re.findall(r"[A-Za-z0-9]+", text)
     slug = "-".join(words[:8]).lower() if words else fallback
@@ -311,6 +321,10 @@ def _synthesize_piper(text, voice_label, rate_pct, out_path):
             str(wav_path),
             "--length-scale",
             str(length_scale),
+            # Sampled phoneme durations make the same script vary by tens of
+            # milliseconds per run, which breaks matching a fixed picture edit.
+            "--noise-w-scale",
+            "0",
         ],
         input=text,
         capture_output=True,

@@ -15,9 +15,11 @@ from tts_lib import (
     list_voices,
     load_scripts,
     piper_available,
+    rate_to_wpm,
     save_scripts,
     slugify,
     synthesize,
+    wav_duration,
 )
 
 st.set_page_config(
@@ -142,10 +144,11 @@ if st.session_state.main_tab == "Generate audio":
             min_value=-40,
             max_value=40,
             value=DEFAULT_RATE,
-            step=5,
-            help="0% is about 165 words/minute. Negative is slower, positive is faster.",
+            step=1,
+            help="0% is about 165 words/minute. Negative is slower, positive is faster. "
+            "Use the arrow keys for 1% steps.",
         )
-        st.caption(f"Current rate: **{rate:+d}%**")
+        st.caption(f"Current rate: **{rate:+d}%** · about {rate_to_wpm(rate)} words/min")
 
     generate_clicked = st.button("🎧 Generate audio", type="primary", use_container_width=True)
 
@@ -167,12 +170,25 @@ if st.session_state.main_tab == "Generate audio":
                     st.session_state.last_audio = {
                         "bytes": audio_bytes,
                         "name": filename,
+                        "seconds": wav_duration(out_path),
+                        "rate": rate,
                     }
                     st.success("Done. Generated on this computer only — play or save the WAV.")
                 except Exception as e:
                     st.error(f"Generation failed: {str(e)[:240]}")
 
     if st.session_state.get("last_audio"):
+        last = st.session_state.last_audio
+        seconds = last.get("seconds")
+        if seconds:
+            minutes, secs = divmod(seconds, 60)
+            clock = f"{int(minutes)}:{secs:04.1f}" if minutes else f"{secs:.2f}s"
+            st.metric("Clip length", clock, help="Match this against your picture edit.")
+            if last.get("rate") is not None:
+                st.caption(
+                    f"Generated at {last['rate']:+d}%. Nudge the speed by 1% and "
+                    "regenerate — the same script and speed always give the same length."
+                )
         st.audio(st.session_state.last_audio["bytes"], format="audio/wav")
         st.download_button(
             "💾 Save WAV",

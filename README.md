@@ -49,7 +49,9 @@ Do **not** deploy this to Streamlit Cloud and do **not** use a public tunnel if 
 
 - **Generate audio** writes a WAV on this machine
 - **My Scripts** stores drafts in `data/scripts.json` on this machine
-- Speed defaults to **-5%** (about 165 words/minute at 0%)
+- Speed defaults to **-5%** (about 165 words/minute at 0%) and moves in **1% steps** — click the slider and use the arrow keys
+- Each clip shows its **length in seconds** so you can match the picture edit
+- The same script at the same speed always produces the same length, so you can nudge 1% at a time and compare
 
 ### Voices
 
