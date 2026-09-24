@@ -18,13 +18,27 @@ PORT=8501
 echo "Installing Scratch VO from: $APP_DIR"
 
 if ! "$PYTHON_BIN" -c "import streamlit" >/dev/null 2>&1; then
-    echo "Installing Streamlit…"
+    echo "Installing Streamlit and the neural voice engine…"
     if ! "$PYTHON_BIN" -m pip install --user -q -r "$APP_DIR/requirements-vo.txt"; then
         echo
-        echo "Could not install Streamlit. Try running this line by itself:"
-        echo "  $PYTHON_BIN -m pip install --user streamlit"
+        echo "Could not install dependencies. Try running this line by itself:"
+        echo "  $PYTHON_BIN -m pip install --user streamlit piper-tts"
         exit 1
     fi
+fi
+
+echo "Checking for a good voice…"
+if ! "$PYTHON_BIN" -c "
+import sys
+sys.path.insert(0, '$APP_DIR')
+from tts_lib import installed_piper_voices, download_piper_voice, DEFAULT_PIPER_VOICE
+if not installed_piper_voices():
+    print('Downloading ' + DEFAULT_PIPER_VOICE + ' (one time, about 110 MB)…')
+    download_piper_voice(DEFAULT_PIPER_VOICE)
+print('Voice ready.')
+"; then
+    echo "Could not download a neural voice. The app will still run with system voices."
+    echo "You can download one later from the app's 'Add better voices' section."
 fi
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"

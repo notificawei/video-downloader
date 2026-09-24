@@ -51,11 +51,17 @@ Do **not** deploy this to Streamlit Cloud and do **not** use a public tunnel if 
 - **My Scripts** stores drafts in `data/scripts.json` on this machine
 - Speed defaults to **-5%** (about 165 words/minute at 0%)
 
-### Voices sound robotic?
+### Voices
 
-macOS ships only compact voices by default. Download better ones in **System Settings → Accessibility → Spoken Content → System Voice → Manage Voices** and pick English voices marked **Premium** (best) or **Enhanced**. The download is one-time; generating stays offline.
+The app picks the best offline engine available, in this order:
 
-The voice list hides macOS novelty voices (Bells, Zarvox, Bubbles and friends) and sorts Premium first, then Enhanced, then basic.
+1. **Piper neural voices** — much better quality, ten English voices, US and UK
+2. **macOS `say`** — built-in system voices
+3. **eSpeak NG** — last resort
+
+Open **Add better voices** in the app to install a Piper voice. Each model is a one-time 60–110 MB download; **your script is never uploaded**, only the voice model is fetched. `install_autostart.sh` grabs a default voice for you.
+
+If you stay on the macOS voices, upgrade them in **System Settings → Accessibility → Spoken Content → System Voice → Manage Voices** and pick English voices marked **Premium** or **Enhanced**. The list hides macOS novelty voices (Bells, Zarvox, Bubbles and friends) and sorts Premium first, then Enhanced, then basic.
 
 If `streamlit` is not on your PATH, keep using `python3 -m streamlit`.
 

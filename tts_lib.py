@@ -41,7 +41,90 @@ def rate_to_wpm(rate_pct):
     return max(80, min(300, wpm))
 
 
+# Neural voices that run entirely on this machine once the model file is downloaded.
+PIPER_BASE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en"
+
+PIPER_VOICES = {
+    "Lessac (US, female) — clearest": "en_US/lessac/high/en_US-lessac-high",
+    "Amy (US, female) — warm": "en_US/amy/medium/en_US-amy-medium",
+    "Kristin (US, female) — bright": "en_US/kristin/medium/en_US-kristin-medium",
+    "HFC Female (US) — neutral": "en_US/hfc_female/medium/en_US-hfc_female-medium",
+    "Ryan (US, male) — news read": "en_US/ryan/high/en_US-ryan-high",
+    "HFC Male (US) — neutral": "en_US/hfc_male/medium/en_US-hfc_male-medium",
+    "Cori (UK, female) — polished": "en_GB/cori/high/en_GB-cori-high",
+    "Jenny (UK, female) — soft": "en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium",
+    "Alba (UK, female) — Scottish": "en_GB/alba/medium/en_GB-alba-medium",
+    "Northern English (UK, male)": "en_GB/northern_english_male/medium/en_GB-northern_english_male-medium",
+}
+
+DEFAULT_PIPER_VOICE = "Lessac (US, female) — clearest"
+
+
+def voices_dir():
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support" / "ScratchVO"
+    else:
+        base = Path(
+            os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")
+        ) / "scratch-vo"
+    return base / "voices"
+
+
+def _piper_model_path(voice_label):
+    rel = PIPER_VOICES[voice_label]
+    return voices_dir() / f"{Path(rel).name}.onnx"
+
+
+def piper_available():
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "piper", "--help"],
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def installed_piper_voices():
+    installed = []
+    for label in PIPER_VOICES:
+        model = _piper_model_path(label)
+        if model.exists() and model.with_suffix(".onnx.json").exists():
+            installed.append(label)
+    return installed
+
+
+def download_piper_voice(voice_label):
+    """Fetch one neural voice model. Downloads the model only — no script text is sent."""
+    import urllib.request
+
+    rel = PIPER_VOICES[voice_label]
+    target_dir = voices_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(rel).name
+
+    for suffix in (".onnx", ".onnx.json"):
+        url = f"{PIPER_BASE_URL}/{rel}{suffix}"
+        dest = target_dir / f"{stem}{suffix}"
+        if dest.exists() and dest.stat().st_size > 0:
+            continue
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response, open(tmp, "wb") as out:
+                shutil.copyfileobj(response, out)
+            os.replace(tmp, dest)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+    return _piper_model_path(voice_label)
+
+
 def engine_name():
+    if installed_piper_voices() and piper_available():
+        return "piper"
     if sys.platform == "darwin" and shutil.which("say"):
         return "macos_say"
     if shutil.which("espeak-ng") or shutil.which("espeak"):
@@ -51,6 +134,8 @@ def engine_name():
 
 def engine_label():
     name = engine_name()
+    if name == "piper":
+        return "Piper neural voices (offline, on this computer)"
     if name == "macos_say":
         return "macOS Speech (offline, on this Mac only)"
     if name == "espeak":
@@ -146,6 +231,8 @@ def _say_voice_label(voice):
 
 def list_voices():
     name = engine_name()
+    if name == "piper":
+        return {label: label for label in installed_piper_voices()}
     if name == "macos_say":
         try:
             raw = subprocess.check_output(["say", "-v", "?"], text=True, stderr=subprocess.STDOUT)
@@ -191,6 +278,9 @@ def synthesize(text, voice, rate_pct, out_path):
     wpm = rate_to_wpm(rate_pct)
     name = engine_name()
 
+    if name == "piper":
+        _synthesize_piper(text, voice, rate_pct, out_path)
+        return
     if name == "macos_say":
         _synthesize_macos(text, voice, wpm, out_path)
         return
@@ -201,6 +291,35 @@ def synthesize(text, voice, rate_pct, out_path):
         "No offline TTS engine found. On a Mac this app uses the built-in say command. "
         "Do not use Edge TTS — that would send the script to Microsoft."
     )
+
+
+def _synthesize_piper(text, voice_label, rate_pct, out_path):
+    model = _piper_model_path(voice_label)
+    # Piper stretches audio by length: >1 is slower, so invert the percentage.
+    length_scale = round(1.0 / (1.0 + rate_pct / 100.0), 4)
+    wav_path = out_path.with_suffix(".wav")
+    _run(
+        [
+            sys.executable,
+            "-m",
+            "piper",
+            "-m",
+            str(model),
+            "-c",
+            str(model.with_suffix(".onnx.json")),
+            "-f",
+            str(wav_path),
+            "--length-scale",
+            str(length_scale),
+        ],
+        input=text,
+        capture_output=True,
+        text=True,
+    )
+    if wav_path != out_path:
+        if out_path.exists():
+            out_path.unlink()
+        os.replace(wav_path, out_path)
 
 
 def _synthesize_macos(text, voice, wpm, out_path):

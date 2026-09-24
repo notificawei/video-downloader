@@ -39,6 +39,21 @@ else
 fi
 
 echo
+echo "2b. Voice engine"
+"$PYTHON_BIN" - <<PYEOF 2>/dev/null || echo "  FAIL  could not check voices"
+import sys
+sys.path.insert(0, "$APP_DIR")
+from tts_lib import engine_name, engine_label, installed_piper_voices
+print("  OK    engine:", engine_label())
+installed = installed_piper_voices()
+if installed:
+    print("  OK    neural voices installed:", ", ".join(installed))
+else:
+    print("  WARN  no neural voice installed — voices will sound robotic")
+    print("        open the app and use 'Add better voices'")
+PYEOF
+
+echo
 echo "3. Background login item"
 if [[ "$(uname)" != "Darwin" ]]; then
     echo "  SKIP  not macOS"

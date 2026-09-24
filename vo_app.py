@@ -4,12 +4,17 @@ from pathlib import Path
 import streamlit as st
 
 from tts_lib import (
+    DEFAULT_PIPER_VOICE,
     DEFAULT_RATE,
+    PIPER_VOICES,
+    download_piper_voice,
     engine_label,
     engine_name,
     has_high_quality_voice,
+    installed_piper_voices,
     list_voices,
     load_scripts,
+    piper_available,
     save_scripts,
     slugify,
     synthesize,
@@ -50,19 +55,59 @@ st.caption(
     "Nothing is sent to Microsoft or any other cloud TTS. "
     "Keep drafts in **My Scripts**. Final VO still comes from your boss."
 )
+engine = engine_name()
 st.info(engine_label())
-if engine_name() == "none":
+
+if engine == "none":
     st.error(
         "No offline speech engine found. On a Mac, the built-in `say` command is used. "
         "Do not fall back to online tools for unpublished news scripts."
     )
-elif engine_name() == "macos_say" and not has_high_quality_voice():
+elif engine != "piper":
     st.warning(
-        "Only basic voices are installed, which is why they sound robotic. "
-        "Download better ones in **System Settings → Accessibility → Spoken Content → "
-        "System Voice → Manage Voices**, and pick any English voice marked "
-        "**Premium** or **Enhanced**. The download happens once; generating stays offline."
+        "These are the built-in system voices, which is why they sound robotic. "
+        "Open **Add better voices** below to install a neural voice that also runs offline."
     )
+    if engine == "macos_say" and not has_high_quality_voice():
+        st.caption(
+            "You can also upgrade the macOS voices in System Settings → Accessibility → "
+            "Spoken Content → System Voice → Manage Voices (pick one marked Premium or Enhanced)."
+        )
+
+with st.expander("Add better voices", expanded=(engine != "piper")):
+    st.caption(
+        "These neural voices sound far better than the built-in ones and run entirely on "
+        "this computer. Downloading fetches a voice model file only — **your script is "
+        "never uploaded**. After the download you can work offline."
+    )
+    if not piper_available():
+        st.error(
+            "The neural voice engine is not installed yet. Run this once in Terminal, "
+            "then reload this page:\n\n```\npython3 -m pip install --user piper-tts\n```"
+        )
+    else:
+        installed = set(installed_piper_voices())
+        for label in PIPER_VOICES:
+            row_l, row_r = st.columns([3, 1])
+            with row_l:
+                if label in installed:
+                    st.markdown(f"**{label}** ✅ installed")
+                else:
+                    st.markdown(label)
+            with row_r:
+                if label in installed:
+                    st.button("Installed", key=f"dl-{label}", disabled=True, use_container_width=True)
+                elif st.button("Download", key=f"dl-{label}", use_container_width=True):
+                    with st.spinner(f"Downloading {label}… (about 60–110 MB, one time)"):
+                        try:
+                            download_piper_voice(label)
+                            st.success(f"{label} is ready.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Download failed: {str(e)[:200]}")
+        if not installed:
+            st.caption(f"Not sure which one? **{DEFAULT_PIPER_VOICE}** is a good default.")
+
 st.divider()
 
 if "main_tab" not in st.session_state:
