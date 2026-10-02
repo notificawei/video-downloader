@@ -253,11 +253,19 @@ def _transcode_to_h264_in_place(path: Path) -> bool:
     return True
 
 
+def _cookie_names(cookie: str) -> set[str]:
+    return {
+        part.split("=", 1)[0].strip()
+        for part in cookie.split(";")
+        if "=" in part and part.split("=", 1)[0].strip()
+    }
+
+
 def _douyin_failure_message(
     return_code: int,
     saved_items: int,
     errors: list[str],
-    had_cookie_file: bool,
+    cookie: str,
 ) -> str:
     """Build an actionable message for a Douyin profile download failure."""
     if saved_items == 0 and return_code == 0:
@@ -265,20 +273,78 @@ def _douyin_failure_message(
     else:
         reason = f"F2 退出码 {return_code}"
 
-    if not had_cookie_file:
+    names = _cookie_names(cookie)
+    if not cookie:
         advice = (
             "缺少抖音登录 cookie。请在 Chrome 登录抖音后按 F12 打开开发者工具，"
-            "在 Network 标签中复制任一请求的 Cookie 请求头，"
+            "在 Network → Fetch/XHR 里复制一条请求的完整 Cookie，"
             "保存为 ~/douyin_cookies.txt 再重试。"
         )
-    else:
+    elif "sessionid" not in names or "x-web-secsdk-uid" not in names:
         advice = (
-            "cookie 可能已过期或该主页无公开作品。请重新导出 "
-            "~/douyin_cookies.txt 后重试。"
+            "保存的抖音 cookie 不完整或已过期，所以主页作品列表是空的。"
+            "请重新打开 douyin.com 并登录，按 F12 → Network → Fetch/XHR，"
+            "点一条状态为 200 的请求，复制 Request Headers 里的完整 Cookie"
+            "（必须包含 sessionid 和 x-web-secsdk-uid），"
+            "覆盖保存为 ~/douyin_cookies.txt。"
         )
+    else:
+        advice = "cookie 可能已过期，或该主页没有公开作品。请重新复制 Cookie 后再试。"
 
     detail = f"（{errors[-1]}）" if errors else ""
     return f"抖音主页下载失败：{reason}{detail}。{advice}"
+
+
+_DOUYIN_PROFILE_RE = re.compile(
+    r'https?://(?:www\.)?(?:douyin|iesdouyin)\.com/(?:share/)?user/([^/?#]+)',
+    re.IGNORECASE,
+)
+
+
+def _resolve_douyin_url(url: str) -> str:
+    """Follow a v.douyin.com share link to the page it actually opens."""
+    if "v.douyin.com/" not in url.lower():
+        return url
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+                    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 "
+                    "Mobile/15E148 Safari/604.1"
+                )
+            },
+            allow_redirects=True,
+            timeout=10,
+        )
+        return response.url
+    except requests.RequestException:
+        return url
+
+
+def douyin_sec_user_id(url: str) -> Optional[str]:
+    """Return the profile id from a Douyin user link, including share short links."""
+    resolved = _resolve_douyin_url(url)
+    match = _DOUYIN_PROFILE_RE.search(resolved)
+    if match:
+        return match.group(1)
+    query = re.search(r'[?&]sec_uid=([^&#]+)', resolved, re.IGNORECASE)
+    return query.group(1) if query else None
+
+
+def douyin_profile_name(sec_user_id: str) -> str:
+    """Look up a public nickname. Failure just leaves the generic profile label."""
+    try:
+        response = requests.get(
+            "https://www.iesdouyin.com/web/api/v2/user/info/",
+            params={"sec_uid": sec_user_id},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        return str((response.json().get("user_info") or {}).get("nickname") or "")
+    except (requests.RequestException, ValueError):
+        return ""
 
 
 def _find_plugin_dirs() -> list[str]:
@@ -373,29 +439,7 @@ def is_douyin_profile_url(url: str) -> bool:
     Douyin's share button often produces a v.douyin.com short URL, so resolve
     that redirect before deciding whether it points to a profile or one post.
     """
-    profile_pattern = (
-        r'https?://(?:www\.)?(?:douyin|iesdouyin)\.com/(?:share/)?user/'
-    )
-    if re.search(profile_pattern, url, flags=re.IGNORECASE):
-        return True
-    if "v.douyin.com/" not in url.lower():
-        return False
-
-    try:
-        response = requests.get(
-            url,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 Chrome/130.0 Safari/537.36"
-                )
-            },
-            allow_redirects=True,
-            timeout=10,
-        )
-        return bool(re.search(profile_pattern, response.url, flags=re.IGNORECASE))
-    except requests.RequestException:
-        return False
+    return douyin_sec_user_id(url) is not None
 
 
 class DownloadProgress:
@@ -548,11 +592,12 @@ class VideoDownloader:
         if cookies_from_browser:
             ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
         platform = detect_platform(url)
-        if platform == "douyin" and is_douyin_profile_url(url):
-            profile_id = re.search(r'/(?:share/)?user/([^/?#]+)', url, re.IGNORECASE)
+        sec_user_id = douyin_sec_user_id(url) if platform == "douyin" else None
+        if sec_user_id:
+            nickname = douyin_profile_name(sec_user_id)
             return {
                 "title": "抖音主页全部作品",
-                "uploader": f"主页 ID: {profile_id.group(1)}" if profile_id else "抖音用户主页",
+                "uploader": nickname or (f"主页 ID: {sec_user_id}" if sec_user_id else "抖音用户主页"),
                 "duration": None,
                 "thumbnail": "",
                 "description": "将自动分页下载该主页公开发布的所有视频和图文作品。",
@@ -708,9 +753,11 @@ class VideoDownloader:
             for p in self.output_dir.rglob("*")
             if p.is_file() and p.suffix.lower() in (".mp4", ".webm", ".jpg", ".jpeg", ".png")
         }
+        sec_user_id = douyin_sec_user_id(url)
+        f2_url = f"https://www.douyin.com/user/{sec_user_id}" if sec_user_id else url
         command = [
             sys.executable, "-m", "f2", "dy",
-            "--url", url,
+            "--url", f2_url,
             "--mode", "post",
             "--path", str(self.output_dir),
             "--interval", "all",
@@ -744,7 +791,7 @@ class VideoDownloader:
                 clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
                 if clean_line:
                     log.info("[f2] %s", clean_line)
-                    if "Error" in clean_line or "错误" in clean_line:
+                    if any(token in clean_line for token in ("Error", "错误", "失败", "为空")):
                         recent_errors.append(clean_line)
                 current = {
                     p.resolve()
@@ -771,7 +818,7 @@ class VideoDownloader:
             if return_code != 0 or progress.completed_items == 0:
                 raise RuntimeError(_douyin_failure_message(
                     return_code, progress.completed_items, recent_errors,
-                    bool(cookie_string),
+                    cookie_string or "",
                 ))
 
             progress.status = "processing"

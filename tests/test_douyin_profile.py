@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 from downloader import (
     DownloadProgress,
     VideoDownloader,
+    _douyin_failure_message,
     _parse_cookie_file,
     _read_netscape_cookie_string,
     _save_media_file,
@@ -14,6 +15,10 @@ from downloader import (
 
 
 class DouyinProfileUrlTests(unittest.TestCase):
+    def test_incomplete_cookie_explains_missing_field(self):
+        message = _douyin_failure_message(0, 0, [], "sessionid=abc")
+        self.assertIn("x-web-secsdk-uid", message)
+
     def test_direct_profile_url(self):
         self.assertTrue(is_douyin_profile_url(
             "https://www.douyin.com/user/MS4wLjABAAAA_example"
@@ -36,12 +41,14 @@ class DouyinProfileUrlTests(unittest.TestCase):
         )
         self.assertTrue(is_douyin_profile_url("https://v.douyin.com/abc123/"))
 
-    def test_profile_info_does_not_use_single_video_extractor(self):
+    @patch("downloader.douyin_profile_name", return_value="中国人在朝鲜")
+    def test_profile_info_does_not_use_single_video_extractor(self, _name):
         info = VideoDownloader().get_info(
             "https://www.douyin.com/user/MS4wLjABAAAA_example"
         )
         self.assertTrue(info["is_profile"])
         self.assertEqual(info["platform"], "douyin")
+        self.assertEqual(info["uploader"], "中国人在朝鲜")
 
     @patch("downloader._video_codec", return_value="h264")
     @patch("downloader._load_douyin_cookie_string", return_value=None)
