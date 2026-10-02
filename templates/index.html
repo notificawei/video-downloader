@@ -71,15 +71,6 @@
         </div>
       </div>
 
-      <!-- Link history -->
-      <div id="historySection" class="hidden">
-        <div class="history-header">
-          <span class="section-title">Link History <span id="historyCount" class="history-count"></span></span>
-          <button class="history-clear-btn" onclick="clearHistory()">Clear all</button>
-        </div>
-        <div id="historyList" class="history-list"></div>
-      </div>
-
       <!-- Video info preview (hidden until fetched) -->
       <div id="infoCard" class="card info-card hidden">
         <div class="card-body info-body">
@@ -145,12 +136,22 @@
         <span id="errorText"></span>
         <button onclick="clearError()" class="error-close">✕</button>
       </div>
+
     </main>
 
     <!-- Footer -->
     <footer class="footer">
       <span>Files saved to <strong id="outputDirText">~/Downloads/VideoDownloader</strong></span>
     </footer>
+
+    <!-- Link history -->
+    <div id="historySection" class="history-section hidden">
+      <div class="history-header">
+        <span class="section-title">Link History <span id="historyCount" class="history-count"></span></span>
+        <button class="history-clear-btn" onclick="clearHistory()">Clear all</button>
+      </div>
+      <div id="historyList" class="history-list"></div>
+    </div>
   </div>
 
   <script src="/static/js/app.js"></script>
