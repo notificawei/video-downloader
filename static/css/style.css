@@ -291,6 +291,12 @@ body {
 }
 
 /* ── Link history ─────────────────────────────────────────────────────────── */
+.history-section {
+  width: 100%;
+  max-width: 760px;
+  margin-top: 28px;
+}
+
 .history-header {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 10px;
