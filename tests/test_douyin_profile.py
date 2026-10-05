@@ -1,3 +1,4 @@
+import csv
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,6 +16,27 @@ from downloader import (
 
 
 class DouyinProfileUrlTests(unittest.TestCase):
+    def test_completed_download_is_listed_in_output_folder(self):
+        with TemporaryDirectory() as output_dir:
+            downloader = VideoDownloader(output_dir=output_dir)
+            downloader._record_history(
+                "https://v.douyin.com/xfQw7DwqGsc/",
+                "clip.mp4",
+            )
+            downloader._record_history(
+                "https://www.youtube.com/watch?v=abc",
+                "video.mp4",
+            )
+            history = Path(output_dir) / "下载历史.csv"
+            with history.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.reader(handle))
+
+        self.assertEqual(rows[0], ["日期", "链接", "文件"])
+        self.assertEqual(rows[1][1], "https://v.douyin.com/xfQw7DwqGsc/")
+        self.assertEqual(rows[1][2], "clip.mp4")
+        self.assertRegex(rows[1][0], r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}")
+        self.assertEqual(rows[2][1], "https://www.youtube.com/watch?v=abc")
+
     def test_cookie_without_login_explains_missing_session(self):
         message = _douyin_failure_message(0, 0, [], "ttwid=abc")
         self.assertIn("sessionid", message)
