@@ -3,6 +3,7 @@ Core download engine built on yt-dlp.
 Supports: YouTube, X/Twitter, Instagram, Facebook, TikTok
 """
 
+import csv
 import logging
 import os
 import re
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -422,6 +424,7 @@ QUALITY_PRESETS = {
 }
 
 DEFAULT_OUTPUT_DIR = Path.home() / "Desktop" / "VideoDownloader"
+HISTORY_FILENAME = "下载历史.csv"
 
 
 def detect_platform(url: str) -> Optional[str]:
@@ -727,6 +730,7 @@ class VideoDownloader:
 
                     progress.status = "done"
                     progress.percent = 100.0
+                    self._record_history(url, progress.filename)
                 except yt_dlp.utils.DownloadError as e:
                     progress.status = "error"
                     progress.error = str(e)
@@ -835,6 +839,7 @@ class VideoDownloader:
             progress.filename = f"已保存 {progress.completed_items} 个作品"
             progress.percent = 100.0
             progress.status = "done"
+            self._record_history(url, progress.filename)
         except Exception as e:
             progress.status = "error"
             progress.error = str(e)
@@ -857,6 +862,26 @@ class VideoDownloader:
             progress.filename = f"正在转码 {path.name}"
             if not _transcode_to_h264_in_place(path):
                 log.warning("Kept original HEVC file: %s", path.name)
+
+    def _record_history(self, url: str, filename: str) -> None:
+        """Append one completed download to 下载历史.csv in the output folder."""
+        path = self.output_dir / HISTORY_FILENAME
+        try:
+            with self._lock:
+                is_new = not path.exists() or path.stat().st_size == 0
+                with path.open("a", encoding="utf-8", newline="") as handle:
+                    if is_new:
+                        handle.write("\ufeff")
+                    writer = csv.writer(handle)
+                    if is_new:
+                        writer.writerow(["日期", "链接", "文件"])
+                    writer.writerow([
+                        datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        url,
+                        filename,
+                    ])
+        except OSError:
+            log.exception("Could not write download history to %s", path)
 
     def get_progress(self, download_id: str) -> Optional[dict]:
         with self._lock:
