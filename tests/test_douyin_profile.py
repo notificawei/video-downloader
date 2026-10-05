@@ -15,9 +15,14 @@ from downloader import (
 
 
 class DouyinProfileUrlTests(unittest.TestCase):
-    def test_incomplete_cookie_explains_missing_field(self):
-        message = _douyin_failure_message(0, 0, [], "sessionid=abc")
-        self.assertIn("x-web-secsdk-uid", message)
+    def test_cookie_without_login_explains_missing_session(self):
+        message = _douyin_failure_message(0, 0, [], "ttwid=abc")
+        self.assertIn("sessionid", message)
+
+    def test_logged_in_cookie_points_to_expiry_or_risk_control(self):
+        message = _douyin_failure_message(0, 0, [], "sessionid=abc; ttwid=def")
+        self.assertIn("风控", message)
+        self.assertNotIn("缺少 sessionid", message)
 
     def test_direct_profile_url(self):
         self.assertTrue(is_douyin_profile_url(

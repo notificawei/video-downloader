@@ -280,16 +280,19 @@ def _douyin_failure_message(
             "在 Network → Fetch/XHR 里复制一条请求的完整 Cookie，"
             "保存为 ~/douyin_cookies.txt 再重试。"
         )
-    elif "sessionid" not in names or "x-web-secsdk-uid" not in names:
+    elif "sessionid" not in names:
         advice = (
-            "保存的抖音 cookie 不完整或已过期，所以主页作品列表是空的。"
-            "请重新打开 douyin.com 并登录，按 F12 → Network → Fetch/XHR，"
-            "点一条状态为 200 的请求，复制 Request Headers 里的完整 Cookie"
-            "（必须包含 sessionid 和 x-web-secsdk-uid），"
+            "保存的抖音 cookie 里没有登录态（缺少 sessionid）。"
+            "请在 www.douyin.com 登录后，按 F12 → Network → Fetch/XHR，"
+            "点一条 www.douyin.com 的请求，复制 Request Headers 里的完整 Cookie，"
             "覆盖保存为 ~/douyin_cookies.txt。"
         )
     else:
-        advice = "cookie 可能已过期，或该主页没有公开作品。请重新复制 Cookie 后再试。"
+        advice = (
+            "cookie 有登录态，但抖音仍返回了空列表。可能是 cookie 已过期、"
+            "账号或网络被临时风控，或该主页没有公开作品。"
+            "请在浏览器确认能看到该主页的作品，稍后重新复制 Cookie 再试。"
+        )
 
     detail = f"（{errors[-1]}）" if errors else ""
     return f"抖音主页下载失败：{reason}{detail}。{advice}"
