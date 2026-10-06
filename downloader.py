@@ -364,6 +364,20 @@ def _youtube_js_runtime() -> dict:
     return {runtime_name: {"path": _NODE_PATH}}
 
 
+def _youtube_remote_components() -> list[str]:
+    """Allow fetching YouTube's challenge solver when yt-dlp-ejs is missing.
+
+    Plain `pip install yt-dlp` skips yt-dlp-ejs. Without it YouTube's signature
+    challenges go unsolved, every format is dropped, and extraction fails with
+    "Requested format is not available".
+    """
+    try:
+        import yt_dlp_ejs  # noqa: F401
+        return []
+    except ImportError:
+        return ["ejs:github"]
+
+
 def _youtube_cookie_file() -> Optional[str]:
     """Return a Netscape cookie file for YouTube, converting a pasted header.
 
@@ -631,6 +645,9 @@ class VideoDownloader:
             runtime = _youtube_js_runtime()
             if runtime:
                 opts["js_runtimes"] = runtime
+            remote = _youtube_remote_components()
+            if remote:
+                opts["remote_components"] = remote
             # Logged-in sessions default to the tv_downgraded player, which
             # currently answers "The page needs to be reloaded."
             opts["extractor_args"] = {
@@ -697,6 +714,9 @@ class VideoDownloader:
             runtime = _youtube_js_runtime()
             if runtime:
                 ydl_opts["js_runtimes"] = runtime
+            remote = _youtube_remote_components()
+            if remote:
+                ydl_opts["remote_components"] = remote
             ydl_opts["extractor_args"] = {
                 "youtube": {"player_client": ["default", "-tv_downgraded", "web_embedded"]}
             }
