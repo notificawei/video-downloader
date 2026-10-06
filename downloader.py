@@ -401,6 +401,33 @@ def _youtube_cookie_file() -> Optional[str]:
     return str(dest)
 
 
+def _youtube_attempts(opts: dict) -> list[dict]:
+    """Return yt-dlp option sets to try, in order, for one YouTube video.
+
+    Logged-in requests are routed to player clients that currently return no
+    downloadable formats, while anonymous requests from a home connection
+    usually work. Cookies are only kept as a fallback for when YouTube insists
+    on a sign-in.
+    """
+    anonymous = {
+        key: value for key, value in opts.items()
+        if key not in ("cookiefile", "cookiesfrombrowser", "extractor_args")
+    }
+    attempts = [anonymous]
+    if "cookiefile" in opts or "cookiesfrombrowser" in opts:
+        attempts.append(opts)
+    return attempts
+
+
+def _youtube_hint(message: str) -> str:
+    if "not a bot" in message or "Sign in to confirm" in message:
+        return message + (
+            " 请在 Chrome 打开 youtube.com 并登录，按 F12 → Network，"
+            "复制一条请求的 Cookie，保存为 ~/youtube_cookies.txt 后重试。"
+        )
+    return message
+
+
 def _find_plugin_dirs() -> list[str]:
     """Return parent directories that contain yt_dlp_plugins packages.
 
@@ -678,60 +705,63 @@ class VideoDownloader:
                 ydl_opts["cookiefile"] = youtube_cookies
         elif platform == "wechat":
             _prepare_wechat_cookies()
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+
+        attempts = _youtube_attempts(ydl_opts) if platform == "youtube" else [ydl_opts]
+        info = None
+        last_error = None
+        for attempt in attempts:
             try:
-                info = ydl.extract_info(url, download=False)
-                if not info:
-                    return {"error": "Could not retrieve video info"}
-
-                formats = []
-                for f in info.get("formats") or []:
-                    height = f.get("height")
-                    if height:
-                        formats.append(
-                            {
-                                "format_id": f.get("format_id", ""),
-                                "ext": f.get("ext", ""),
-                                "height": height,
-                                "width": f.get("width"),
-                                "fps": f.get("fps"),
-                                "vcodec": f.get("vcodec", "none"),
-                                "acodec": f.get("acodec", "none"),
-                                "filesize": f.get("filesize"),
-                            }
-                        )
-
-                # Deduplicate heights and sort descending
-                seen = set()
-                unique_formats = []
-                for f in sorted(formats, key=lambda x: x["height"], reverse=True):
-                    if f["height"] not in seen:
-                        seen.add(f["height"])
-                        unique_formats.append(f)
-
-                return {
-                    "title": info.get("title", "Unknown"),
-                    "uploader": info.get("uploader") or info.get("channel", "Unknown"),
-                    "duration": info.get("duration"),
-                    "thumbnail": info.get("thumbnail", ""),
-                    "description": (info.get("description") or "")[:300],
-                    "platform": detect_platform(url) or info.get("extractor", ""),
-                    "view_count": info.get("view_count"),
-                    "like_count": info.get("like_count"),
-                    "upload_date": info.get("upload_date", ""),
-                    "formats": unique_formats[:10],
-                    "webpage_url": info.get("webpage_url", url),
-                }
+                with yt_dlp.YoutubeDL(attempt) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                break
             except yt_dlp.utils.DownloadError as e:
-                message = str(e)
-                if "not a bot" in message or "Sign in to confirm" in message:
-                    message += (
-                        " 请在 Chrome 打开 youtube.com 并登录，按 F12 → Network，"
-                        "复制一条请求的 Cookie，保存为 ~/youtube_cookies.txt 后重试。"
-                    )
-                return {"error": message}
+                last_error = e
             except Exception as e:
                 return {"error": f"Unexpected error: {e}"}
+        if info is None and last_error is not None:
+            return {"error": _youtube_hint(str(last_error))}
+
+        if not info:
+            return {"error": "Could not retrieve video info"}
+
+        formats = []
+        for f in info.get("formats") or []:
+            height = f.get("height")
+            if height:
+                formats.append(
+                    {
+                        "format_id": f.get("format_id", ""),
+                        "ext": f.get("ext", ""),
+                        "height": height,
+                        "width": f.get("width"),
+                        "fps": f.get("fps"),
+                        "vcodec": f.get("vcodec", "none"),
+                        "acodec": f.get("acodec", "none"),
+                        "filesize": f.get("filesize"),
+                    }
+                )
+
+        # Deduplicate heights and sort descending
+        seen = set()
+        unique_formats = []
+        for f in sorted(formats, key=lambda x: x["height"], reverse=True):
+            if f["height"] not in seen:
+                seen.add(f["height"])
+                unique_formats.append(f)
+
+        return {
+            "title": info.get("title", "Unknown"),
+            "uploader": info.get("uploader") or info.get("channel", "Unknown"),
+            "duration": info.get("duration"),
+            "thumbnail": info.get("thumbnail", ""),
+            "description": (info.get("description") or "")[:300],
+            "platform": detect_platform(url) or info.get("extractor", ""),
+            "view_count": info.get("view_count"),
+            "like_count": info.get("like_count"),
+            "upload_date": info.get("upload_date", ""),
+            "formats": unique_formats[:10],
+            "webpage_url": info.get("webpage_url", url),
+        }
 
     def download(
         self,
@@ -773,8 +803,18 @@ class VideoDownloader:
                     output_dir=tmp_dir,
                 )
                 try:
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        ydl.download([url])
+                    attempts = _youtube_attempts(opts) if platform == "youtube" else [opts]
+                    for index, attempt in enumerate(attempts):
+                        try:
+                            with yt_dlp.YoutubeDL(attempt) as ydl:
+                                ydl.download([url])
+                            break
+                        except yt_dlp.utils.DownloadError:
+                            if index == len(attempts) - 1:
+                                raise
+                            log.info("Retrying %s with browser cookies", url)
+                            progress.status = "starting"
+                            progress.error = None
 
                     if progress.status in ("error",):
                         return
@@ -792,13 +832,7 @@ class VideoDownloader:
                     self._record_history(url, progress.filename)
                 except yt_dlp.utils.DownloadError as e:
                     progress.status = "error"
-                    message = str(e)
-                    if "not a bot" in message or "Sign in to confirm" in message:
-                        message += (
-                            " 请在 Chrome 打开 youtube.com 并登录，按 F12 → Network，"
-                            "复制一条请求的 Cookie，保存为 ~/youtube_cookies.txt 后重试。"
-                        )
-                    progress.error = message
+                    progress.error = _youtube_hint(str(e))
                     log.error("DownloadError for %s: %s", url, e)
                 except Exception as e:
                     progress.status = "error"
