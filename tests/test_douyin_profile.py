@@ -13,6 +13,7 @@ from downloader import (
     _parse_cookie_file,
     _read_netscape_cookie_string,
     _save_media_file,
+    _youtube_attempts,
     _youtube_cookie_file,
     is_douyin_profile_url,
 )
@@ -54,6 +55,23 @@ class DouyinProfileUrlTests(unittest.TestCase):
         )
         with yt_dlp.YoutubeDL(opts):
             pass
+
+    def test_youtube_tries_anonymous_before_browser_cookies(self):
+        opts = {
+            "format": "best",
+            "cookiesfrombrowser": ("chrome",),
+            "extractor_args": {"youtube": {"player_client": ["default"]}},
+        }
+        attempts = _youtube_attempts(opts)
+
+        self.assertEqual(len(attempts), 2)
+        self.assertNotIn("cookiesfrombrowser", attempts[0])
+        self.assertNotIn("extractor_args", attempts[0])
+        self.assertEqual(attempts[0]["format"], "best")
+        self.assertIs(attempts[1], opts)
+
+    def test_youtube_without_cookies_has_single_attempt(self):
+        self.assertEqual(len(_youtube_attempts({"format": "best"})), 1)
 
     @patch("downloader.Path.home")
     def test_pasted_youtube_cookie_is_converted_for_yt_dlp(self, home):
