@@ -48,6 +48,10 @@ class DouyinProfileUrlTests(unittest.TestCase):
         if runtime is not None:
             self.assertIsInstance(runtime, dict)
             self.assertIn("path", next(iter(runtime.values())))
+        self.assertIn(
+            "-tv_downgraded",
+            opts["extractor_args"]["youtube"]["player_client"],
+        )
         with yt_dlp.YoutubeDL(opts):
             pass
 
