@@ -4,6 +4,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+import yt_dlp
+
 from downloader import (
     DownloadProgress,
     VideoDownloader,
@@ -11,6 +13,7 @@ from downloader import (
     _parse_cookie_file,
     _read_netscape_cookie_string,
     _save_media_file,
+    _youtube_cookie_file,
     is_douyin_profile_url,
 )
 
@@ -36,6 +39,30 @@ class DouyinProfileUrlTests(unittest.TestCase):
         self.assertEqual(rows[1][2], "clip.mp4")
         self.assertRegex(rows[1][0], r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}")
         self.assertEqual(rows[2][1], "https://www.youtube.com/watch?v=abc")
+
+    def test_youtube_runtime_option_is_a_dict(self):
+        with TemporaryDirectory() as output_dir:
+            downloader = VideoDownloader(output_dir=output_dir)
+            opts = downloader._build_ydl_opts("best", DownloadProgress(), "youtube")
+        runtime = opts.get("js_runtimes")
+        if runtime is not None:
+            self.assertIsInstance(runtime, dict)
+            self.assertIn("path", next(iter(runtime.values())))
+        with yt_dlp.YoutubeDL(opts):
+            pass
+
+    @patch("downloader.Path.home")
+    def test_pasted_youtube_cookie_is_converted_for_yt_dlp(self, home):
+        with TemporaryDirectory() as tmp:
+            home.return_value = Path(tmp)
+            (Path(tmp) / "youtube_cookies.txt").write_text(
+                "VISITOR_INFO1_LIVE=abc; CONSENT=YES",
+                encoding="utf-8",
+            )
+            dest = _youtube_cookie_file()
+            text = Path(dest).read_text(encoding="utf-8")
+
+        self.assertIn(".youtube.com\tTRUE\t/\tTRUE\t0\tVISITOR_INFO1_LIVE\tabc", text)
 
     def test_cookie_without_login_explains_missing_session(self):
         message = _douyin_failure_message(0, 0, [], "ttwid=abc")

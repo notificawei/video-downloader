@@ -352,6 +352,55 @@ def douyin_profile_name(sec_user_id: str) -> str:
         return ""
 
 
+def _youtube_js_runtime() -> dict:
+    """Return the yt-dlp js_runtimes option for Node or Bun.
+
+    yt-dlp 2026 expects a dict. A list of "node:/path" strings raises
+    "Invalid js_runtimes format" and YouTube extraction stops immediately.
+    """
+    if not _NODE_PATH:
+        return {}
+    runtime_name = "bun" if "bun" in Path(_NODE_PATH).name else "node"
+    return {runtime_name: {"path": _NODE_PATH}}
+
+
+def _youtube_cookie_file() -> Optional[str]:
+    """Return a Netscape cookie file for YouTube, converting a pasted header.
+
+    A launchd service usually cannot decrypt Chrome's cookie database, so an
+    exported file is the reliable way past YouTube's bot check.
+    """
+    source = None
+    for candidate in (
+        Path.home() / "youtube_cookies.txt",
+        Path.home() / "Desktop" / "youtube_cookies.txt",
+    ):
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            source = candidate
+            break
+    if source is None:
+        return None
+
+    text = source.read_text(encoding="utf-8", errors="replace")
+    if "\t" in text:
+        return str(source)
+
+    lines = ["# Netscape HTTP Cookie File"]
+    for part in text.replace("\n", ";").split(";"):
+        if "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        name, value = name.strip(), value.strip()
+        if name:
+            lines.append(f".youtube.com\tTRUE\t/\tTRUE\t0\t{name}\t{value}")
+    if len(lines) == 1:
+        return None
+    dest = Path(tempfile.gettempdir()) / "videoget_youtube_cookies.txt"
+    dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    log.info("YouTube: using cookie file %s", source)
+    return str(dest)
+
+
 def _find_plugin_dirs() -> list[str]:
     """Return parent directories that contain yt_dlp_plugins packages.
 
@@ -552,16 +601,12 @@ class VideoDownloader:
         }
 
         if platform == "youtube":
-            # yt-dlp 2026+ requires a JS runtime to generate PO tokens for YouTube.
-            # Pass Node.js/Bun if available; without it many formats are unavailable.
-            if _NODE_PATH:
-                runtime_name = "bun" if "bun" in _NODE_PATH else "node"
-                opts["js_runtimes"] = [f"{runtime_name}:{_NODE_PATH}"]
-            # mweb (mobile web) player client works without PO tokens and bypasses
-            # most bot-detection checks that affect the default android client.
-            opts["extractor_args"] = {
-                "youtube": {"player_client": ["mweb", "web", "android"]}
-            }
+            runtime = _youtube_js_runtime()
+            if runtime:
+                opts["js_runtimes"] = runtime
+            youtube_cookies = _youtube_cookie_file()
+            if youtube_cookies and not cookies_file:
+                cookies_file = youtube_cookies
 
         if platform == "instagram":
             opts["noplaylist"] = False
@@ -617,12 +662,12 @@ class VideoDownloader:
             }
 
         if platform == "youtube":
-            if _NODE_PATH:
-                runtime_name = "bun" if "bun" in _NODE_PATH else "node"
-                ydl_opts["js_runtimes"] = [f"{runtime_name}:{_NODE_PATH}"]
-            ydl_opts["extractor_args"] = {
-                "youtube": {"player_client": ["mweb", "web", "android"]}
-            }
+            runtime = _youtube_js_runtime()
+            if runtime:
+                ydl_opts["js_runtimes"] = runtime
+            youtube_cookies = _youtube_cookie_file()
+            if youtube_cookies:
+                ydl_opts["cookiefile"] = youtube_cookies
         elif platform == "wechat":
             _prepare_wechat_cookies()
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -670,7 +715,13 @@ class VideoDownloader:
                     "webpage_url": info.get("webpage_url", url),
                 }
             except yt_dlp.utils.DownloadError as e:
-                return {"error": str(e)}
+                message = str(e)
+                if "not a bot" in message or "Sign in to confirm" in message:
+                    message += (
+                        " 请在 Chrome 打开 youtube.com 并登录，按 F12 → Network，"
+                        "复制一条请求的 Cookie，保存为 ~/youtube_cookies.txt 后重试。"
+                    )
+                return {"error": message}
             except Exception as e:
                 return {"error": f"Unexpected error: {e}"}
 
@@ -733,7 +784,13 @@ class VideoDownloader:
                     self._record_history(url, progress.filename)
                 except yt_dlp.utils.DownloadError as e:
                     progress.status = "error"
-                    progress.error = str(e)
+                    message = str(e)
+                    if "not a bot" in message or "Sign in to confirm" in message:
+                        message += (
+                            " 请在 Chrome 打开 youtube.com 并登录，按 F12 → Network，"
+                            "复制一条请求的 Cookie，保存为 ~/youtube_cookies.txt 后重试。"
+                        )
+                    progress.error = message
                     log.error("DownloadError for %s: %s", url, e)
                 except Exception as e:
                     progress.status = "error"
