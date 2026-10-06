@@ -604,6 +604,11 @@ class VideoDownloader:
             runtime = _youtube_js_runtime()
             if runtime:
                 opts["js_runtimes"] = runtime
+            # Logged-in sessions default to the tv_downgraded player, which
+            # currently answers "The page needs to be reloaded."
+            opts["extractor_args"] = {
+                "youtube": {"player_client": ["default", "-tv_downgraded", "web_embedded"]}
+            }
             youtube_cookies = _youtube_cookie_file()
             if youtube_cookies and not cookies_file:
                 cookies_file = youtube_cookies
@@ -665,6 +670,9 @@ class VideoDownloader:
             runtime = _youtube_js_runtime()
             if runtime:
                 ydl_opts["js_runtimes"] = runtime
+            ydl_opts["extractor_args"] = {
+                "youtube": {"player_client": ["default", "-tv_downgraded", "web_embedded"]}
+            }
             youtube_cookies = _youtube_cookie_file()
             if youtube_cookies:
                 ydl_opts["cookiefile"] = youtube_cookies
