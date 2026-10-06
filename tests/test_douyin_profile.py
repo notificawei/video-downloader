@@ -70,6 +70,16 @@ class DouyinProfileUrlTests(unittest.TestCase):
         self.assertEqual(attempts[0]["format"], "best")
         self.assertIs(attempts[1], opts)
 
+    @patch.dict("sys.modules", {"yt_dlp_ejs": None})
+    def test_missing_challenge_solver_is_fetched_remotely(self):
+        with TemporaryDirectory() as output_dir:
+            downloader = VideoDownloader(output_dir=output_dir)
+            opts = downloader._build_ydl_opts("best", DownloadProgress(), "youtube")
+
+        self.assertEqual(opts.get("remote_components"), ["ejs:github"])
+        with yt_dlp.YoutubeDL(opts):
+            pass
+
     def test_youtube_without_cookies_has_single_attempt(self):
         self.assertEqual(len(_youtube_attempts({"format": "best"})), 1)
 
