@@ -1,0 +1,1072 @@
+"""
+Core download engine built on yt-dlp.
+Supports: YouTube, X/Twitter, Instagram, Facebook, TikTok
+"""
+
+import csv
+import logging
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, Optional
+
+import requests
+import yt_dlp
+
+from douyin_browser import BrowserUnavailable, LoginRequired, collect_profile_posts, safe_name
+
+# Log to the same file launchd uses so errors are always visible.
+_LOG_FILE = Path.home() / "Library" / "Logs" / "videoget.log"
+_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(_LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+log = logging.getLogger(__name__)
+
+
+def _find_ffmpeg() -> Optional[str]:
+    """Return the directory containing ffmpeg, checking common macOS locations."""
+    candidate = shutil.which("ffmpeg")
+    if candidate:
+        return str(Path(candidate).parent)
+    for p in ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"):
+        if Path(p, "ffmpeg").exists():
+            return p
+    return None
+
+
+def _find_node() -> Optional[str]:
+    """Return the full path to a node/bun executable for yt-dlp's JS runtime."""
+    for name in ("node", "bun"):
+        candidate = shutil.which(name)
+        if candidate:
+            return candidate
+    for p in ("/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node",
+              "/opt/homebrew/bin/bun", "/usr/local/bin/bun"):
+        if Path(p).exists():
+            return p
+    return None
+
+
+def _find_wechat_cookie_file() -> Optional[str]:
+    """Return a Netscape cookie file containing Tencent cookies, if one exists.
+
+    Decrypting Chrome cookies needs macOS Keychain access, which a launchd
+    agent usually cannot obtain, so an exported cookie file is the reliable
+    way to authenticate WeChat Channels downloads.
+    """
+    for p in (
+        Path.home() / "yuanbao_cookies.txt",
+        Path.home() / ".config" / "savextube" / "yuanbao_cookies.txt",
+        Path.home() / "Desktop" / "yuanbao_cookies.txt",
+        Path(__file__).parent / "yuanbao_cookies.txt",
+    ):
+        if p.is_file():
+            return str(p)
+    return None
+
+
+def _prepare_wechat_cookies() -> Optional[str]:
+    """Point the WeChat plugin at a Tencent cookie file via its env var."""
+    cookie_file = _find_wechat_cookie_file()
+    if cookie_file:
+        os.environ["YUANBAO_COOKIE_FILE"] = cookie_file
+        log.info("WeChat: using Yuanbao cookie file %s", cookie_file)
+    else:
+        log.warning(
+            "WeChat: no Yuanbao cookie file found — falling back to browser "
+            "cookies, which often fail under launchd (no Keychain access)"
+        )
+    return cookie_file
+
+
+def _read_netscape_cookie_string(path: Path, domain_filter: str) -> str:
+    """Flatten a Netscape cookie file into a 'name=value; ...' header string."""
+    parts = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Netscape files mark HttpOnly entries with a comment-style prefix.
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        elif line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) < 7:
+            continue
+        domain, name, value = fields[0], fields[5], fields[6]
+        if domain_filter in domain.lower():
+            parts.append(f"{name}={value}")
+    return "; ".join(parts)
+
+
+def _parse_cookie_file(path: Path, domain_filter: str) -> str:
+    """Read a cookie file in either Netscape or raw 'name=value; ...' format.
+
+    Browser extensions export Netscape files, but copying the Cookie request
+    header straight out of DevTools is the only option on machines where
+    extensions cannot be installed, so both layouts are accepted.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace").strip()
+    if not text:
+        return ""
+
+    # Netscape records are tab-separated; a pasted header never is.
+    if "\t" not in text:
+        pairs = [
+            part.strip()
+            for part in text.replace("\n", ";").split(";")
+            if "=" in part
+        ]
+        return "; ".join(pairs)
+
+    return _read_netscape_cookie_string(path, domain_filter)
+
+
+def _douyin_cookie_path() -> Optional[Path]:
+    """Return the first exported Douyin cookie file that exists."""
+    for p in (
+        Path.home() / "douyin_cookies.txt",
+        Path.home() / "Desktop" / "douyin_cookies.txt",
+        Path(__file__).parent / "douyin_cookies.txt",
+    ):
+        if p.is_file():
+            return p
+    return None
+
+
+def _load_douyin_cookie_string() -> Optional[str]:
+    """Return a Douyin cookie header from an exported cookie file, if present.
+
+    Reading Chrome's cookies needs Keychain access that a launchd agent cannot
+    obtain, so an exported file is the dependable source.
+    """
+    path = _douyin_cookie_path()
+    if path is None:
+        return None
+    cookie = _parse_cookie_file(path, "douyin.com")
+    if cookie:
+        log.info("Douyin: using cookie file %s", path)
+        return cookie
+    log.warning("Douyin: %s contains no douyin.com cookies", path)
+    return None
+
+
+_VIDEO_SUFFIXES = (".mp4", ".webm", ".mkv", ".mov", ".flv")
+_AUDIO_SUFFIXES = (".m4a", ".mp3", ".aac", ".opus")
+
+
+def _ffmpeg_binary() -> str:
+    return shutil.which("ffmpeg") or (
+        str(Path(_FFMPEG_LOCATION) / "ffmpeg") if _FFMPEG_LOCATION else "ffmpeg"
+    )
+
+
+def _ffprobe_binary() -> str:
+    return shutil.which("ffprobe") or (
+        str(Path(_FFMPEG_LOCATION) / "ffprobe") if _FFMPEG_LOCATION else "ffprobe"
+    )
+
+
+_H264_ARGS = [
+    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+    "-c:a", "aac", "-b:a", "192k",
+    "-movflags", "+faststart",
+]
+
+
+def _log_ffmpeg_failure(name: str, result: subprocess.CompletedProcess) -> None:
+    stderr = (result.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+    log.error(
+        "ffmpeg failed for %s (exit %s): %s",
+        name, result.returncode, stderr[-1] if stderr else "no output",
+    )
+
+
+def _video_codec(path: Path) -> str:
+    """Return the first video stream's codec name, or '' if it cannot be read."""
+    try:
+        result = subprocess.run(
+            [
+                _ffprobe_binary(), "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path),
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        # Probing is best effort; an unreadable codec just means no transcode.
+        log.warning("Could not probe codec for %s", path.name)
+        return ""
+    return result.stdout.strip().lower()
+
+
+def _save_media_file(src: Path, output_dir: Path) -> Optional[Path]:
+    """Move one finished download into output_dir, normalising video codecs.
+
+    Premiere Pro and QuickTime reject several container/codec combinations
+    that Douyin and YouTube serve, so video is re-encoded to H.264/AAC MP4.
+    Audio keeps its own container because it has no video stream to convert.
+    """
+    suffix = src.suffix.lower()
+    if suffix in _AUDIO_SUFFIXES:
+        dest = output_dir / src.name
+        shutil.move(str(src), str(dest))
+        return dest
+    if suffix not in _VIDEO_SUFFIXES:
+        return None
+
+    dest = output_dir / src.with_suffix(".mp4").name
+    result = subprocess.run(
+        [_ffmpeg_binary(), "-y", "-i", str(src), *_H264_ARGS, str(dest)],
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        return dest
+
+    # Keep the real container on failure. Renaming a non-MP4 file to .mp4
+    # yields a file whose extension lies about its contents, which is what
+    # makes it refuse to open in QuickTime and Premiere Pro.
+    _log_ffmpeg_failure(src.name, result)
+    if dest.exists():
+        dest.unlink()
+    fallback = output_dir / src.name
+    shutil.move(str(src), str(fallback))
+    return fallback
+
+
+def _transcode_to_h264_in_place(path: Path) -> bool:
+    """Re-encode a file to H.264 MP4, replacing it. Returns whether it worked."""
+    tmp_out = path.with_name(f"{path.stem}.h264tmp.mp4")
+    result = subprocess.run(
+        [_ffmpeg_binary(), "-y", "-i", str(path), *_H264_ARGS, str(tmp_out)],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        _log_ffmpeg_failure(path.name, result)
+        if tmp_out.exists():
+            tmp_out.unlink()
+        return False
+
+    final = path.with_suffix(".mp4")
+    path.unlink()
+    tmp_out.replace(final)
+    return True
+
+
+def _cookie_names(cookie: str) -> set[str]:
+    return {
+        part.split("=", 1)[0].strip()
+        for part in cookie.split(";")
+        if "=" in part and part.split("=", 1)[0].strip()
+    }
+
+
+_DOUYIN_DOWNLOAD_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+)
+
+
+def _download_first_working(urls: list[str], target: Path, headers: dict) -> bool:
+    """Stream the first URL that works into target. Returns whether one did."""
+    partial = target.with_name(target.name + ".part")
+    for url in urls:
+        try:
+            with requests.get(url, headers=headers, stream=True, timeout=30) as response:
+                if response.status_code != 200:
+                    log.warning("Douyin media %s -> HTTP %s", url[:80], response.status_code)
+                    continue
+                with partial.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=1 << 16):
+                        handle.write(chunk)
+            if partial.stat().st_size > 0:
+                partial.replace(target)
+                return True
+        except (requests.RequestException, OSError) as error:
+            log.warning("Douyin media download failed (%s): %s", url[:80], error)
+        finally:
+            if partial.exists():
+                partial.unlink()
+    return False
+
+
+def _douyin_failure_message(
+    return_code: int,
+    saved_items: int,
+    errors: list[str],
+    cookie: str,
+) -> str:
+    """Build an actionable message for a Douyin profile download failure."""
+    names = _cookie_names(cookie)
+    if not cookie:
+        return (
+            "缺少抖音登录。打开 VideoGet 页面，点「从浏览器读取登录」。"
+            "Chrome 需已登录 www.douyin.com；若失败，完全退出 Chrome 后再点一次。"
+        )
+    if "sessionid" not in names:
+        return (
+            "保存的抖音登录里没有 sessionid。请在 Chrome 登录 www.douyin.com 后，"
+            "回到 VideoGet 页面再点一次「从浏览器读取登录」。"
+        )
+
+    detail = f"（{errors[-1]}）" if errors else ""
+    return (
+        f"抖音主页下载失败：浏览器没有读到任何作品{detail}。"
+        "请看刚才弹出的 Chrome 窗口：如果出现滑块或验证，完成后再重试；"
+        "如果显示未登录，回到 VideoGet 页面再点一次「从浏览器读取登录」。"
+    )
+
+
+_DOUYIN_PROFILE_RE = re.compile(
+    r'https?://(?:www\.)?(?:douyin|iesdouyin)\.com/(?:share/)?user/([^/?#]+)',
+    re.IGNORECASE,
+)
+
+
+def _resolve_douyin_url(url: str) -> str:
+    """Follow a v.douyin.com share link to the page it actually opens."""
+    if "v.douyin.com/" not in url.lower():
+        return url
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+                    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 "
+                    "Mobile/15E148 Safari/604.1"
+                )
+            },
+            allow_redirects=True,
+            timeout=10,
+        )
+        return response.url
+    except requests.RequestException:
+        return url
+
+
+def douyin_sec_user_id(url: str) -> Optional[str]:
+    """Return the profile id from a Douyin user link, including share short links."""
+    resolved = _resolve_douyin_url(url)
+    match = _DOUYIN_PROFILE_RE.search(resolved)
+    if match:
+        return match.group(1)
+    query = re.search(r'[?&]sec_uid=([^&#]+)', resolved, re.IGNORECASE)
+    return query.group(1) if query else None
+
+
+def douyin_profile_name(sec_user_id: str) -> str:
+    """Look up a public nickname. Failure just leaves the generic profile label."""
+    try:
+        response = requests.get(
+            "https://www.iesdouyin.com/web/api/v2/user/info/",
+            params={"sec_uid": sec_user_id},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        return str((response.json().get("user_info") or {}).get("nickname") or "")
+    except (requests.RequestException, ValueError):
+        return ""
+
+
+def _youtube_js_runtime() -> dict:
+    """Return the yt-dlp js_runtimes option for Node or Bun.
+
+    yt-dlp 2026 expects a dict. A list of "node:/path" strings raises
+    "Invalid js_runtimes format" and YouTube extraction stops immediately.
+    """
+    if not _NODE_PATH:
+        return {}
+    runtime_name = "bun" if "bun" in Path(_NODE_PATH).name else "node"
+    return {runtime_name: {"path": _NODE_PATH}}
+
+
+def _youtube_remote_components() -> list[str]:
+    """Allow fetching YouTube's challenge solver when yt-dlp-ejs is missing.
+
+    Plain `pip install yt-dlp` skips yt-dlp-ejs. Without it YouTube's signature
+    challenges go unsolved, every format is dropped, and extraction fails with
+    "Requested format is not available".
+    """
+    try:
+        import yt_dlp_ejs  # noqa: F401
+        return []
+    except ImportError:
+        return ["ejs:github"]
+
+
+def _youtube_cookie_file() -> Optional[str]:
+    """Return a Netscape cookie file for YouTube, converting a pasted header.
+
+    A launchd service usually cannot decrypt Chrome's cookie database, so an
+    exported file is the reliable way past YouTube's bot check.
+    """
+    source = None
+    for candidate in (
+        Path.home() / "youtube_cookies.txt",
+        Path.home() / "Desktop" / "youtube_cookies.txt",
+    ):
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            source = candidate
+            break
+    if source is None:
+        return None
+
+    text = source.read_text(encoding="utf-8", errors="replace")
+    if "\t" in text:
+        return str(source)
+
+    lines = ["# Netscape HTTP Cookie File"]
+    for part in text.replace("\n", ";").split(";"):
+        if "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        name, value = name.strip(), value.strip()
+        if name:
+            lines.append(f".youtube.com\tTRUE\t/\tTRUE\t0\t{name}\t{value}")
+    if len(lines) == 1:
+        return None
+    dest = Path(tempfile.gettempdir()) / "videoget_youtube_cookies.txt"
+    dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    log.info("YouTube: using cookie file %s", source)
+    return str(dest)
+
+
+def _youtube_attempts(opts: dict) -> list[dict]:
+    """Return yt-dlp option sets to try, in order, for one YouTube video.
+
+    Logged-in requests are routed to player clients that currently return no
+    downloadable formats, while anonymous requests from a home connection
+    usually work. Cookies are only kept as a fallback for when YouTube insists
+    on a sign-in.
+    """
+    anonymous = {
+        key: value for key, value in opts.items()
+        if key not in ("cookiefile", "cookiesfrombrowser", "extractor_args")
+    }
+    attempts = [anonymous]
+    if "cookiefile" in opts or "cookiesfrombrowser" in opts:
+        attempts.append(opts)
+    return attempts
+
+
+def _youtube_hint(message: str) -> str:
+    if "not a bot" in message or "Sign in to confirm" in message:
+        return message + (
+            " 请在 Chrome 打开 youtube.com 并登录，按 F12 → Network，"
+            "复制一条请求的 Cookie，保存为 ~/youtube_cookies.txt 后重试。"
+        )
+    return message
+
+
+def _find_plugin_dirs() -> list[str]:
+    """Return parent directories that contain yt_dlp_plugins packages.
+
+    When the app runs as a launchd service the Python sys.path may not include
+    all user/site-packages directories, so yt-dlp can miss installed plugins.
+    We find them explicitly and pass them through the plugin_dirs ydl option.
+    """
+    import sys
+
+    dirs: list[str] = []
+
+    def _add(p: Path) -> None:
+        s = str(p)
+        if p.is_dir() and s not in dirs:
+            dirs.append(s)
+
+    # 1. Every entry already in sys.path that has a yt_dlp_plugins sub-dir.
+    for base in sys.path:
+        if (Path(base) / "yt_dlp_plugins").is_dir():
+            _add(Path(base))
+
+    # 2. Common Homebrew system site-packages  (/opt/homebrew/lib/python3.x/site-packages)
+    for prefix in ("/opt/homebrew/lib", "/usr/local/lib"):
+        p = Path(prefix)
+        if p.exists():
+            for sp in p.glob("python*/site-packages"):
+                if (sp / "yt_dlp_plugins").is_dir():
+                    _add(sp)
+
+    # 3. macOS user site-packages installed by `pip --user` or `--break-system-packages`
+    #    Pattern: ~/Library/Python/<major.minor>/lib/python/site-packages
+    user_lib = Path.home() / "Library" / "Python"
+    if user_lib.exists():
+        for ver_dir in user_lib.iterdir():
+            sp = ver_dir / "lib" / "python" / "site-packages"
+            if (sp / "yt_dlp_plugins").is_dir():
+                _add(sp)
+
+    return dirs
+
+
+_FFMPEG_LOCATION = _find_ffmpeg()
+_NODE_PATH = _find_node()
+_PLUGIN_DIRS = _find_plugin_dirs()
+
+log.info("ffmpeg: %s", _FFMPEG_LOCATION or "not found")
+log.info("node/bun: %s", _NODE_PATH or "not found")
+log.info("yt-dlp plugin dirs: %s", _PLUGIN_DIRS or "none")
+
+SUPPORTED_PLATFORMS = {
+    "youtube": ["youtube.com", "youtu.be"],
+    "x_twitter": ["x.com", "twitter.com"],
+    "instagram": ["instagram.com"],
+    "facebook": ["facebook.com", "fb.watch"],
+    "tiktok": ["tiktok.com", "vm.tiktok.com"],
+    # Chinese platforms
+    "bilibili": ["bilibili.com", "b23.tv"],
+    "douyin": ["douyin.com", "iesdouyin.com", "v.douyin.com"],
+    "xiaohongshu": ["xiaohongshu.com", "xhslink.com", "redbook.com"],
+    # WeChat Channels (via yt-dlp-patch plugin)
+    "wechat": ["weixin.qq.com/sph", "channels.weixin.qq.com", "finder.video.qq.com"],
+}
+
+QUALITY_PRESETS = {
+    "best": "bestvideo+bestaudio/best",
+    "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+    "720p": "bestvideo[height<=720]+bestaudio/best[height<=720]",
+    "480p": "bestvideo[height<=480]+bestaudio/best[height<=480]",
+    "audio_only": "bestaudio/best",
+}
+
+DEFAULT_OUTPUT_DIR = Path.home() / "Desktop" / "VideoDownloader"
+HISTORY_FILENAME = "下载历史.csv"
+
+
+def detect_platform(url: str) -> Optional[str]:
+    url_lower = url.lower()
+    for platform, domains in SUPPORTED_PLATFORMS.items():
+        if any(domain in url_lower for domain in domains):
+            return platform
+    return None
+
+
+def sanitize_filename(name: str) -> str:
+    return re.sub(r'[\\/*?:"<>|]', "_", name)
+
+
+def is_douyin_profile_url(url: str) -> bool:
+    """Return whether a URL identifies a Douyin user profile.
+
+    Douyin's share button often produces a v.douyin.com short URL, so resolve
+    that redirect before deciding whether it points to a profile or one post.
+    """
+    return douyin_sec_user_id(url) is not None
+
+
+class DownloadProgress:
+    def __init__(self):
+        self.status = "idle"
+        self.percent = 0.0
+        self.speed = ""
+        self.eta = ""
+        self.filename = ""
+        self.total_bytes = 0
+        self.downloaded_bytes = 0
+        self.error = None
+        self.is_batch = False
+        self.completed_items = 0
+        self.total_items = 0
+
+    def to_dict(self):
+        return {
+            "status": self.status,
+            "percent": round(self.percent, 1),
+            "speed": self.speed,
+            "eta": self.eta,
+            "filename": self.filename,
+            "total_bytes": self.total_bytes,
+            "downloaded_bytes": self.downloaded_bytes,
+            "error": self.error,
+            "is_batch": self.is_batch,
+            "completed_items": self.completed_items,
+            "total_items": self.total_items,
+        }
+
+
+class VideoDownloader:
+    def __init__(self, output_dir: Optional[str] = None):
+        self.output_dir = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._active_downloads: dict[str, DownloadProgress] = {}
+        self._lock = threading.Lock()
+
+    def _make_progress_hook(self, progress: DownloadProgress) -> Callable:
+        def hook(d):
+            if d["status"] == "downloading":
+                progress.status = "downloading"
+                try:
+                    downloaded = d.get("downloaded_bytes", 0) or 0
+                    total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                    progress.downloaded_bytes = downloaded
+                    progress.total_bytes = total
+                    if total > 0:
+                        progress.percent = (downloaded / total) * 100
+                    else:
+                        # Fall back to the percent string yt-dlp provides
+                        pct_str = d.get("_percent_str", "0%").strip().replace("%", "")
+                        try:
+                            progress.percent = float(pct_str)
+                        except ValueError:
+                            pass
+                    progress.speed = d.get("_speed_str", "").strip()
+                    progress.eta = d.get("_eta_str", "").strip()
+                    fn = d.get("filename", "")
+                    if fn:
+                        progress.filename = Path(fn).name
+                except Exception:
+                    pass
+            elif d["status"] == "finished":
+                progress.status = "processing"
+                progress.percent = 100.0
+                fn = d.get("filename", "")
+                if fn:
+                    progress.filename = Path(fn).name
+            elif d["status"] == "error":
+                progress.status = "error"
+                progress.error = str(d.get("error", "Unknown error"))
+
+        return hook
+
+    def _build_ydl_opts(
+        self,
+        quality: str,
+        progress: DownloadProgress,
+        platform: Optional[str],
+        cookies_file: Optional[str] = None,
+        cookies_from_browser: Optional[str] = None,
+        output_dir: Optional[str] = None,
+    ) -> dict:
+        format_selector = QUALITY_PRESETS.get(quality, QUALITY_PRESETS["best"])
+        out_dir = Path(output_dir) if output_dir else self.output_dir
+
+        opts = {
+            "format": format_selector,
+            "outtmpl": str(out_dir / "%(uploader)s - %(title)s [%(id)s].%(ext)s"),
+            "merge_output_format": "mp4",
+            **({"ffmpeg_location": _FFMPEG_LOCATION} if _FFMPEG_LOCATION else {}),
+            **({"plugin_dirs": _PLUGIN_DIRS} if _PLUGIN_DIRS else {}),
+            "proxy": "",  # bypass any inherited proxy env vars
+            "noplaylist": True,
+            "progress_hooks": [self._make_progress_hook(progress)],
+            "quiet": True,
+            "no_warnings": False,
+            "extract_flat": False,
+            "postprocessors": [],
+            "writethumbnail": False,
+            "retries": 3,
+            "fragment_retries": 3,
+            "ratelimit": None,
+        }
+
+        if platform == "youtube":
+            runtime = _youtube_js_runtime()
+            if runtime:
+                opts["js_runtimes"] = runtime
+            remote = _youtube_remote_components()
+            if remote:
+                opts["remote_components"] = remote
+            # Logged-in sessions default to the tv_downgraded player, which
+            # currently answers "The page needs to be reloaded."
+            opts["extractor_args"] = {
+                "youtube": {"player_client": ["default", "-tv_downgraded", "web_embedded"]}
+            }
+            youtube_cookies = _youtube_cookie_file()
+            if youtube_cookies and not cookies_file:
+                cookies_file = youtube_cookies
+
+        if platform == "instagram":
+            opts["noplaylist"] = False
+
+        # Bilibili: prefer mp4 container; higher quality needs login cookies
+        if platform == "bilibili":
+            opts["format"] = format_selector + "/bestvideo+bestaudio/best"
+
+        # Douyin / Xiaohongshu: disable playlist by default (share links are single videos)
+        if platform in ("douyin", "xiaohongshu"):
+            opts["noplaylist"] = True
+
+        # WeChat Channels: requires Tencent cookies (from Chrome/Safari after
+        # visiting yuanbao.tencent.com or WeChat Web).
+        if platform == "wechat":
+            opts["noplaylist"] = True
+            _prepare_wechat_cookies()
+
+        if cookies_file and Path(cookies_file).exists():
+            opts["cookiefile"] = cookies_file
+        elif cookies_from_browser:
+            opts["cookiesfrombrowser"] = (cookies_from_browser,)
+
+        return opts
+
+    def get_info(self, url: str, cookies_from_browser: Optional[str] = None) -> dict:
+        """Fetch video metadata without downloading."""
+        ydl_opts: dict = {
+            "quiet": True,
+            "no_warnings": True,
+            "proxy": "",
+            **({"plugin_dirs": _PLUGIN_DIRS} if _PLUGIN_DIRS else {}),
+        }
+        if cookies_from_browser:
+            ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
+        platform = detect_platform(url)
+        sec_user_id = douyin_sec_user_id(url) if platform == "douyin" else None
+        if sec_user_id:
+            nickname = douyin_profile_name(sec_user_id)
+            return {
+                "title": "抖音主页全部作品",
+                "uploader": nickname or (f"主页 ID: {sec_user_id}" if sec_user_id else "抖音用户主页"),
+                "duration": None,
+                "thumbnail": "",
+                "description": "将自动分页下载该主页公开发布的所有视频和图文作品。",
+                "platform": "douyin",
+                "view_count": None,
+                "like_count": None,
+                "upload_date": "",
+                "formats": [],
+                "webpage_url": url,
+                "is_profile": True,
+            }
+
+        if platform == "youtube":
+            runtime = _youtube_js_runtime()
+            if runtime:
+                ydl_opts["js_runtimes"] = runtime
+            remote = _youtube_remote_components()
+            if remote:
+                ydl_opts["remote_components"] = remote
+            ydl_opts["extractor_args"] = {
+                "youtube": {"player_client": ["default", "-tv_downgraded", "web_embedded"]}
+            }
+            youtube_cookies = _youtube_cookie_file()
+            if youtube_cookies:
+                ydl_opts["cookiefile"] = youtube_cookies
+        elif platform == "wechat":
+            _prepare_wechat_cookies()
+
+        attempts = _youtube_attempts(ydl_opts) if platform == "youtube" else [ydl_opts]
+        info = None
+        last_error = None
+        for attempt in attempts:
+            try:
+                with yt_dlp.YoutubeDL(attempt) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                break
+            except yt_dlp.utils.DownloadError as e:
+                last_error = e
+            except Exception as e:
+                return {"error": f"Unexpected error: {e}"}
+        if info is None and last_error is not None:
+            return {"error": _youtube_hint(str(last_error))}
+
+        if not info:
+            return {"error": "Could not retrieve video info"}
+
+        formats = []
+        for f in info.get("formats") or []:
+            height = f.get("height")
+            if height:
+                formats.append(
+                    {
+                        "format_id": f.get("format_id", ""),
+                        "ext": f.get("ext", ""),
+                        "height": height,
+                        "width": f.get("width"),
+                        "fps": f.get("fps"),
+                        "vcodec": f.get("vcodec", "none"),
+                        "acodec": f.get("acodec", "none"),
+                        "filesize": f.get("filesize"),
+                    }
+                )
+
+        # Deduplicate heights and sort descending
+        seen = set()
+        unique_formats = []
+        for f in sorted(formats, key=lambda x: x["height"], reverse=True):
+            if f["height"] not in seen:
+                seen.add(f["height"])
+                unique_formats.append(f)
+
+        return {
+            "title": info.get("title", "Unknown"),
+            "uploader": info.get("uploader") or info.get("channel", "Unknown"),
+            "duration": info.get("duration"),
+            "thumbnail": info.get("thumbnail", ""),
+            "description": (info.get("description") or "")[:300],
+            "platform": detect_platform(url) or info.get("extractor", ""),
+            "view_count": info.get("view_count"),
+            "like_count": info.get("like_count"),
+            "upload_date": info.get("upload_date", ""),
+            "formats": unique_formats[:10],
+            "webpage_url": info.get("webpage_url", url),
+        }
+
+    def download(
+        self,
+        url: str,
+        quality: str = "best",
+        download_id: str = "",
+        cookies_file: Optional[str] = None,
+        cookies_from_browser: Optional[str] = None,
+        download_profile: bool = False,
+    ) -> DownloadProgress:
+        platform = detect_platform(url)
+        progress = DownloadProgress()
+        progress.status = "starting"
+        download_profile = (
+            platform == "douyin"
+            and (download_profile or is_douyin_profile_url(url))
+        )
+        progress.is_batch = download_profile
+
+        if not download_id:
+            import uuid
+            download_id = str(uuid.uuid4())
+
+        with self._lock:
+            self._active_downloads[download_id] = progress
+
+        def _run():
+            if download_profile:
+                self._run_douyin_profile_download(
+                    url, progress, cookies_from_browser=cookies_from_browser
+                )
+                return
+
+            # Download into a private temp dir so yt-dlp can freely rename/merge,
+            # then move the finished file into the real output directory.
+            with tempfile.TemporaryDirectory(prefix="vdl_") as tmp_dir:
+                opts = self._build_ydl_opts(
+                    quality, progress, platform, cookies_file, cookies_from_browser,
+                    output_dir=tmp_dir,
+                )
+                try:
+                    attempts = _youtube_attempts(opts) if platform == "youtube" else [opts]
+                    for index, attempt in enumerate(attempts):
+                        try:
+                            with yt_dlp.YoutubeDL(attempt) as ydl:
+                                ydl.download([url])
+                            break
+                        except yt_dlp.utils.DownloadError:
+                            if index == len(attempts) - 1:
+                                raise
+                            log.info("Retrying %s with browser cookies", url)
+                            progress.status = "starting"
+                            progress.error = None
+
+                    if progress.status in ("error",):
+                        return
+
+                    # Re-encode to H.264/AAC for universal compatibility
+                    # (QuickTime, Premiere Pro, VLC, etc.)
+                    progress.status = "processing"
+                    for src in sorted(Path(tmp_dir).iterdir()):
+                        saved = _save_media_file(src, self.output_dir)
+                        if saved:
+                            progress.filename = saved.name
+
+                    progress.status = "done"
+                    progress.percent = 100.0
+                    self._record_history(url, progress.filename)
+                except yt_dlp.utils.DownloadError as e:
+                    progress.status = "error"
+                    progress.error = _youtube_hint(str(e))
+                    log.error("DownloadError for %s: %s", url, e)
+                except Exception as e:
+                    progress.status = "error"
+                    progress.error = f"Unexpected error: {e}"
+                    log.exception("Unexpected error downloading %s", url)
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+
+        return progress, download_id
+
+    def _run_douyin_profile_download(
+        self,
+        url: str,
+        progress: DownloadProgress,
+        cookies_from_browser: Optional[str] = None,
+    ) -> None:
+        """Download every public post from a Douyin profile.
+
+        A real Chrome loads the profile so Douyin's own scripts sign the list
+        requests; the posts it returns are then saved with plain HTTP.
+        """
+        progress.status = "downloading"
+        progress.filename = "正在读取抖音主页作品列表…"
+
+        cookie_string = _load_douyin_cookie_string()
+        if "sessionid" not in _cookie_names(cookie_string or ""):
+            progress.status = "error"
+            progress.error = _douyin_failure_message(1, 0, [], cookie_string or "")
+            log.error("Douyin profile download refused: %s", progress.error)
+            return
+
+        sec_user_id = douyin_sec_user_id(url)
+        if not sec_user_id:
+            progress.status = "error"
+            progress.error = "没能从这个链接里识别出抖音主页，请直接粘贴主页链接。"
+            return
+
+        def on_progress(_count: int, message: str) -> None:
+            progress.filename = message
+
+        log.info("Starting Douyin profile download: %s", url)
+        try:
+            posts = self._collect_douyin_posts(sec_user_id, on_progress)
+            if not posts:
+                raise RuntimeError(_douyin_failure_message(
+                    0, 0, [], cookie_string or "",
+                ))
+
+            progress.total_items = len(posts)
+            new_files = self._save_douyin_posts(posts, progress)
+            if progress.completed_items == 0:
+                raise RuntimeError(
+                    f"找到 {len(posts)} 个作品，但没有一个能下载成功。"
+                    "可能是链接已过期或网络被拦截，请稍后再试。"
+                )
+
+            progress.status = "processing"
+            try:
+                self._normalise_batch_videos(new_files, progress)
+            except Exception:
+                # The posts are already on disk, so a transcoding problem must
+                # not discard an otherwise successful batch download.
+                log.exception("Post-download transcoding failed for %s", url)
+
+            progress.filename = f"已保存 {progress.completed_items} 个作品"
+            progress.percent = 100.0
+            progress.status = "done"
+            self._record_history(url, progress.filename)
+        except Exception as e:
+            progress.status = "error"
+            progress.error = str(e)
+            log.exception("Douyin profile download failed for %s", url)
+
+    def _collect_douyin_posts(self, sec_user_id: str, on_progress) -> list:
+        """Read the profile's post list through Chrome. Split out so tests can replace it."""
+        cookie_file = _douyin_cookie_path()
+        try:
+            return collect_profile_posts(
+                sec_user_id,
+                cookie_file or Path("/nonexistent"),
+                on_progress,
+            )
+        except BrowserUnavailable as error:
+            raise RuntimeError(f"抖音主页下载失败：{error}") from error
+        except LoginRequired as error:
+            raise RuntimeError(
+                f"抖音主页下载失败：{error}"
+                "请在 Chrome 重新登录 www.douyin.com，然后回到 VideoGet 页面再点一次「从浏览器读取登录」。"
+            ) from error
+
+    def _save_douyin_posts(self, posts: list, progress: DownloadProgress) -> set[Path]:
+        """Save each post under <output>/抖音/<nickname>/ and return the new files."""
+        new_files: set[Path] = set()
+        total = len(posts)
+        folder = self.output_dir / "抖音" / safe_name(posts[0].nickname or "主页", 30)
+        folder.mkdir(parents=True, exist_ok=True)
+        headers = {
+            "User-Agent": _DOUYIN_DOWNLOAD_UA,
+            "Referer": "https://www.douyin.com/",
+        }
+
+        for index, post in enumerate(posts, start=1):
+            stamp = datetime.fromtimestamp(post.create_time).strftime("%Y%m%d") if post.create_time else "00000000"
+            stem = f"{stamp}_{post.aweme_id}_{safe_name(post.desc)}"
+            progress.filename = f"正在下载 {index}/{total}：{safe_name(post.desc, 24)}"
+            progress.percent = (index - 1) / total * 100
+
+            saved: list[Path] = []
+            if post.video_urls:
+                target = folder / f"{stem}.mp4"
+                if target.exists() and target.stat().st_size > 0:
+                    saved.append(target)
+                elif _download_first_working(post.video_urls, target, headers):
+                    saved.append(target)
+                    new_files.add(target)
+            else:
+                for number, image_url in enumerate(post.image_urls, start=1):
+                    target = folder / f"{stem}_{number:02d}.jpg"
+                    if target.exists() and target.stat().st_size > 0:
+                        saved.append(target)
+                    elif _download_first_working([image_url], target, headers):
+                        saved.append(target)
+                        new_files.add(target)
+
+            if saved:
+                progress.completed_items += 1
+            else:
+                log.warning("Douyin post %s could not be downloaded", post.aweme_id)
+
+        return new_files
+
+    def _normalise_batch_videos(
+        self, new_files: set[Path], progress: DownloadProgress
+    ) -> None:
+        """Re-encode HEVC posts so Premiere Pro and QuickTime can open them.
+
+        Douyin's originals are saved untouched, and Douyin serves a lot of
+        HEVC/H.265, which Premiere Pro often refuses. H.264 files are left
+        alone so a large batch is not needlessly re-encoded.
+        """
+        for path in sorted(new_files):
+            if not path.is_file() or path.suffix.lower() not in _VIDEO_SUFFIXES:
+                continue
+            if _video_codec(path) not in ("hevc", "h265"):
+                continue
+            progress.filename = f"正在转码 {path.name}"
+            if not _transcode_to_h264_in_place(path):
+                log.warning("Kept original HEVC file: %s", path.name)
+
+    def _record_history(self, url: str, filename: str) -> None:
+        """Append one completed download to 下载历史.csv in the output folder."""
+        path = self.output_dir / HISTORY_FILENAME
+        try:
+            with self._lock:
+                is_new = not path.exists() or path.stat().st_size == 0
+                with path.open("a", encoding="utf-8", newline="") as handle:
+                    if is_new:
+                        handle.write("\ufeff")
+                    writer = csv.writer(handle)
+                    if is_new:
+                        writer.writerow(["日期", "链接", "文件"])
+                    writer.writerow([
+                        datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        url,
+                        filename,
+                    ])
+        except OSError:
+            log.exception("Could not write download history to %s", path)
+
+    def get_progress(self, download_id: str) -> Optional[dict]:
+        with self._lock:
+            p = self._active_downloads.get(download_id)
+        return p.to_dict() if p else None
+
+    def list_downloads(self) -> list[dict]:
+        with self._lock:
+            return [
+                {"id": k, **v.to_dict()}
+                for k, v in self._active_downloads.items()
+            ]
+
+    @property
+    def output_path(self) -> str:
+        return str(self.output_dir)

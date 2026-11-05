@@ -1,49 +1,158 @@
-# Social Media Video Downloader
+# VideoGet — High-Res Social Media Video Downloader
 
-Download videos from YouTube, Instagram, TikTok, Douyin, Facebook, X, Bilibili, and Xiaohongshu.
+Download videos in the best available quality from YouTube, X/Twitter, Instagram, Facebook, and TikTok.  
+Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
-## Desktop App
+---
+
+## Supported Platforms (Phase 1 — Western)
+
+| Platform | Notes |
+|---|---|
+| **YouTube** | Full quality up to 8K, playlists, shorts |
+| **X / Twitter** | Videos and GIFs |
+| **Instagram** | Reels, posts, stories (may need cookies) |
+| **Facebook** | Public videos (may need cookies) |
+| **TikTok** | Videos without watermark |
+| **Douyin** | Single videos and full user-profile archives (cookies recommended) |
+
+---
+
+## Setup
+
+### 1. Install Python dependencies
 
 ```bash
-bash install.sh
-python3 video_downloader.py
+pip3 install -r requirements.txt
 ```
 
-## Deploy Online (Streamlit Cloud) — Get a Shareable Link
+> yt-dlp is also required: `pip3 install yt-dlp`
 
-### Step 1 — Push to GitHub
+### 2. (Recommended) Install ffmpeg
 
-1. Go to [github.com](https://github.com) → **New repository** → name it `video-downloader` → **Create**
-2. Open Terminal and run:
+ffmpeg is needed to merge video + audio streams for the best quality.
 
 ```bash
-cd "/Users/wangjiawei/Desktop/video downloader vb coding"
-git init
-git add app.py requirements.txt
-git commit -m "Add web app"
-git remote add origin https://github.com/YOUR_USERNAME/video-downloader.git
-git push -u origin main
+# macOS
+brew install ffmpeg
+
+# Ubuntu/Debian
+sudo apt install ffmpeg
 ```
 
-> Replace `YOUR_USERNAME` with your GitHub username.
+---
 
-### Step 2 — Deploy on Streamlit Cloud
+## Usage
 
-1. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub
-2. Click **New app**
-3. Select your `video-downloader` repository
-4. Set **Main file path** to `app.py`
-5. Click **Deploy**
+### Web UI (recommended)
 
-After ~2 minutes you'll get a link like:
-```
-https://YOUR_USERNAME-video-downloader-app-xxxx.streamlit.app
+```bash
+./start.sh
 ```
 
-Share that link with anyone — no installation needed on their end.
+Then open **http://127.0.0.1:5000** in your browser.
 
-### Notes
+Or with a custom port:
 
-- The web version only works for **public videos** (no login required)
-- For private/login-required content, use the desktop app with browser cookies
-- Free Streamlit Cloud has a 1 GB memory limit — very large files (>500 MB) may fail
+```bash
+./start.sh 8080
+```
+
+### CLI
+
+```bash
+# Download best quality
+python3 cli.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+# Choose quality
+python3 cli.py "https://youtu.be/..." --quality 1080p
+
+# Audio only
+python3 cli.py "https://youtu.be/..." --quality audio_only
+
+# Custom output directory
+python3 cli.py "https://..." --output ~/Videos
+
+# Just show video info
+python3 cli.py "https://..." --info
+
+# With cookies (for Instagram/Facebook)
+python3 cli.py "https://www.instagram.com/reel/..." --cookies ~/cookies.txt
+
+# Launch web UI from CLI
+python3 cli.py --web
+```
+
+### Download every post from a Douyin profile
+
+In the web UI, paste a direct profile URL such as
+`https://www.douyin.com/user/...` or a profile share link from
+`https://v.douyin.com/...`. VideoGet detects profile URLs automatically and
+changes the action to **下载主页全部作品**.
+
+Douyin rejects unauthenticated reads of a profile's post list. In the web UI,
+click **从浏览器读取登录** once. VideoGet saves the login on this Mac and reuses
+it. Click the button again only after it expires. If macOS asks for Keychain
+access, click Allow.
+
+When you download a profile, VideoGet opens a Chrome window, loads the profile
+with that login, and scrolls to the end. Douyin's own page signs the list
+requests, so no third-party signer is needed. If Douyin shows a slider check or
+login box in that window, finish it there. Posts are saved to
+`Desktop/VideoDownloader/抖音/<nickname>/`, and files that already exist are
+skipped on the next run. The first run installs `playwright` automatically.
+
+`python3 export_cookies.py douyin` does the same login export from Terminal.
+
+### Quality options
+
+| Option | Description |
+|---|---|
+| `best` | Best video + best audio (default) |
+| `1080p` | Up to 1080p |
+| `720p` | Up to 720p |
+| `480p` | Up to 480p |
+| `audio_only` | Audio track only (saved as m4a/mp3) |
+
+---
+
+## Output
+
+All downloads are saved to `~/Downloads/VideoDownloader/` by default.  
+Filenames follow the pattern: `{uploader} - {title}.mp4`
+
+---
+
+## Cookies (for private/age-restricted content)
+
+Some platforms (Instagram, Facebook, age-restricted YouTube) require you to be logged in. Export cookies from your browser using a browser extension like [cookies.txt](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) and pass the file path:
+
+```bash
+python3 cli.py "https://..." --cookies /path/to/cookies.txt
+```
+
+---
+
+## Architecture
+
+```
+video downloader/
+├── downloader.py      # Core engine (yt-dlp wrapper, threading, progress)
+├── app.py             # Flask web server + REST API
+├── cli.py             # Command-line interface
+├── start.sh           # Quick launcher script
+├── requirements.txt
+├── templates/
+│   └── index.html     # Web UI HTML
+└── static/
+    ├── css/style.css  # Styles
+    └── js/app.js      # Frontend JavaScript
+```
+
+---
+
+## Roadmap (Phase 2 — Chinese Platforms)
+
+- [ ] Douyin (抖音)
+- [ ] Xiaohongshu / RED (小红书)
+- [ ] Bilibili (哔哩哔哩)
