@@ -114,6 +114,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadOutputDir();
   setupQualityButtons();
   renderHistory();
+  refreshDouyinLogin();
 
   $('urlInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') fetchInfo();
@@ -134,6 +135,69 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 50);
   });
 });
+
+function renderDouyinLogin(data) {
+  const status = $('douyinCookieStatus');
+  if (!status) return;
+  status.textContent = data.message || data.error || '';
+  status.classList.toggle('ok', Boolean(data.logged_in));
+  status.classList.toggle('bad', !data.logged_in);
+}
+
+async function refreshDouyinLogin() {
+  try {
+    const res = await fetch('/api/douyin-cookie');
+    renderDouyinLogin(await res.json());
+  } catch (_) {
+    renderDouyinLogin({ logged_in: false, message: '检查登录状态失败，请确认 VideoGet 正在运行。' });
+  }
+}
+
+function pollDouyinLogin() {
+  let tries = 0;
+  const timer = setInterval(async () => {
+    tries += 1;
+    try {
+      const res = await fetch('/api/douyin-cookie');
+      const data = await res.json();
+      if (data.logged_in || tries >= 45) {
+        clearInterval(timer);
+        renderDouyinLogin(data);
+        $('douyinCookieBtn').disabled = false;
+      }
+    } catch (_) {
+      if (tries >= 45) {
+        clearInterval(timer);
+        $('douyinCookieBtn').disabled = false;
+      }
+    }
+  }, 2000);
+}
+
+async function importDouyinCookie() {
+  const btn = $('douyinCookieBtn');
+  btn.disabled = true;
+  renderDouyinLogin({
+    logged_in: false,
+    message: '正在读取浏览器…如果弹出「允许」或密码框，点允许。不用复制任何命令。',
+  });
+  try {
+    const res = await fetch('/api/douyin-cookie', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ browser: $('douyinBrowser').value || 'chrome' }),
+    });
+    const data = await res.json();
+    renderDouyinLogin(data);
+    if (data.pending) {
+      pollDouyinLogin();
+      return;
+    }
+  } catch (_) {
+    renderDouyinLogin({ logged_in: false, message: '读取失败。完全退出浏览器后再点一次。' });
+  }
+  btn.disabled = false;
+}
 
 async function loadOutputDir() {
   try {

@@ -2,8 +2,15 @@ import unittest
 from http.cookiejar import Cookie
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-from export_cookies import _write_netscape, netscape_cookie_names
+from export_cookies import (
+    LoginCookieMissing,
+    _write_netscape,
+    douyin_login_status,
+    export_douyin_from_app,
+    netscape_cookie_names,
+)
 
 
 def _cookie(name: str, *, http_only: bool = False) -> Cookie:
@@ -46,6 +53,45 @@ class NetscapeCookieNamesTest(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertIn("sessionid", netscape_cookie_names(text))
         self.assertIn("#HttpOnly_", text)
+
+    def test_login_status_accepts_httponly_sessionid(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "douyin_cookies.txt"
+            path.write_text(
+                "#HttpOnly_.douyin.com\tTRUE\t/\tTRUE\t0\tsessionid\tsecret\n",
+                encoding="utf-8",
+            )
+            status = douyin_login_status(path)
+
+        self.assertTrue(status["logged_in"])
+
+    def test_missing_file_is_logged_out(self):
+        status = douyin_login_status(Path("/tmp/does-not-exist-videoget-cookie.txt"))
+        self.assertFalse(status["logged_in"])
+
+    @patch("export_cookies.douyin_login_status", return_value={"logged_in": True, "message": "ok"})
+    @patch("export_cookies.export_with_browser_cookie3")
+    def test_app_export_uses_direct_read(self, _export, _status):
+        result = export_douyin_from_app("chrome")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["logged_in"])
+
+    @patch("export_cookies._open_terminal_export", return_value=True)
+    @patch("export_cookies._export_via_osascript", return_value="keychain")
+    @patch("export_cookies.douyin_login_status", return_value={"logged_in": False, "message": "no"})
+    @patch("export_cookies.export_with_browser_cookie3", side_effect=RuntimeError("keychain"))
+    def test_app_export_opens_terminal_when_keychain_blocks(self, _export, _status, _dialog, opener):
+        result = export_douyin_from_app("chrome")
+        self.assertTrue(result["pending"])
+        opener.assert_called_once()
+
+    @patch("export_cookies.douyin_login_status", return_value={"logged_in": False, "message": "no"})
+    @patch("export_cookies.export_with_browser_cookie3", side_effect=LoginCookieMissing("no session"))
+    def test_missing_login_does_not_open_a_window(self, _export, _status):
+        with patch("export_cookies._open_terminal_export") as opener:
+            result = export_douyin_from_app("chrome")
+        opener.assert_not_called()
+        self.assertFalse(result["ok"])
 
 
 if __name__ == "__main__":

@@ -90,26 +90,12 @@ In the web UI, paste a direct profile URL such as
 `https://v.douyin.com/...`. VideoGet detects profile URLs automatically and
 changes the action to **下载主页全部作品**.
 
-Douyin rejects unauthenticated reads of a profile's post list, so save a
-logged-in cookie to `~/douyin_cookies.txt`. Easiest path (run in Terminal on
-your Mac — Cloud Agent cannot read your Chrome):
+Douyin rejects unauthenticated reads of a profile's post list. In the web UI,
+click **从浏览器读取登录** once. VideoGet saves the login on this Mac and reuses
+it. Click the button again only after it expires. If macOS asks for Keychain
+access, click Allow.
 
-```bash
-# 1) Log in at https://www.douyin.com in Chrome
-# 2) Quit Chrome completely (Chrome → Quit Google Chrome)
-# 3) Export:
-python3 export_cookies.py douyin
-# or: bash 导出抖音Cookie.sh
-```
-
-macOS may ask for Keychain access — click Allow. Then restart VideoGet.
-
-Manual alternatives still work: a Netscape file from a cookies.txt extension,
-or the raw `Cookie` request header from DevTools (`pbpaste > ~/douyin_cookies.txt`).
-Prefer a request to `www.douyin.com` (e.g. `aweme/post`), not `mcs.zijieapi.com`.
-
-With that file in place the batch download no longer needs browser Keychain
-access, so Chrome can stay open while VideoGet downloads.
+`python3 export_cookies.py douyin` does the same export from Terminal.
 
 ### Quality options
 

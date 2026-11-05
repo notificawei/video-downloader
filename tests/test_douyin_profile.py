@@ -207,7 +207,7 @@ class DouyinProfileUrlTests(unittest.TestCase):
 
         popen.assert_not_called()
         self.assertEqual(progress.status, "error")
-        self.assertIn("douyin_cookies.txt", progress.error)
+        self.assertIn("从浏览器读取登录", progress.error)
 
     @patch("downloader._DOUYIN_LIST_TIMEOUT", 0)
     @patch("downloader._load_douyin_cookie_string", return_value="sessionid=abc")

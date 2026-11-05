@@ -9,6 +9,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 from downloader import VideoDownloader, QUALITY_PRESETS, SUPPORTED_PLATFORMS, detect_platform
+from export_cookies import douyin_login_status, export_douyin_from_app
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 CORS(app)
@@ -94,6 +95,20 @@ def api_platforms():
 @app.route("/api/output_dir")
 def api_output_dir():
     return jsonify({"path": downloader.output_path})
+
+
+@app.route("/api/douyin-cookie", methods=["GET"])
+def api_douyin_cookie_status():
+    return jsonify(douyin_login_status())
+
+
+@app.route("/api/douyin-cookie", methods=["POST"])
+def api_douyin_cookie_export():
+    data = request.get_json(silent=True) or {}
+    browser = (data.get("browser") or "chrome").strip()
+    result = export_douyin_from_app(browser)
+    status = 400 if result.get("error") == "不支持的浏览器" else 200
+    return jsonify(result), status
 
 
 @app.route("/api/debug")

@@ -56,6 +56,24 @@
             <span class="browser-hint">Required for YouTube, Bilibili 1080p+, Douyin &amp; 视频号</span>
           </div>
 
+          <div class="cookie-card">
+            <div class="cookie-heading">抖音登录</div>
+            <p id="douyinCookieStatus" class="cookie-status">正在检查登录…</p>
+            <div class="browser-row">
+              <select id="douyinBrowser" class="browser-select">
+                <option value="chrome">Chrome</option>
+                <option value="safari">Safari</option>
+                <option value="edge">Edge</option>
+                <option value="firefox">Firefox</option>
+                <option value="brave">Brave</option>
+              </select>
+              <button id="douyinCookieBtn" class="btn btn-primary" onclick="importDouyinCookie()">
+                从浏览器读取登录
+              </button>
+            </div>
+            <p class="browser-hint">点一次就会保存，之后下载不用再操作。只有过期才需要再点。先在浏览器登录 douyin.com。如果弹出「允许」或密码框，点允许。</p>
+          </div>
+
           <!-- Platform pills -->
           <div class="platform-pills">
             <span class="pill yt">YouTube</span>
@@ -115,9 +133,7 @@
             </div>
 
             <p id="profileHint" class="profile-hint hidden">
-              将自动分页下载该主页的所有公开作品。请先在终端运行
-              <code>python3 export_cookies.py douyin</code>
-              生成 ~/douyin_cookies.txt（Chrome 需已登录抖音并先完全退出），再重启 VideoGet。
+              将下载该主页的全部公开作品。请先让上方「抖音登录」显示已保存，再点下载。
             </p>
             <button id="downloadBtn" class="btn btn-download" onclick="startDownload()">
               Download

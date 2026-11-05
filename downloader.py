@@ -285,22 +285,19 @@ def _douyin_failure_message(
     names = _cookie_names(cookie)
     if not cookie:
         advice = (
-            "缺少抖音登录 cookie。请在「终端」运行：python3 export_cookies.py douyin"
-            "（先登录 www.douyin.com，再完全退出 Chrome；钥匙串点允许），"
-            "生成 ~/douyin_cookies.txt 后重启 VideoGet 再试。"
+            "缺少抖音登录。打开 VideoGet 页面，点「从浏览器读取登录」。"
+            "Chrome 需已登录 www.douyin.com；若失败，完全退出 Chrome 后再点一次。"
         )
     elif "sessionid" not in names:
         advice = (
-            "保存的抖音 cookie 里没有登录态（缺少 sessionid）。"
-            "请确认 Chrome 已登录 www.douyin.com，完全退出 Chrome 后运行："
-            "python3 export_cookies.py douyin"
+            "保存的抖音登录里没有 sessionid。请在 Chrome 登录 www.douyin.com 后，"
+            "回到 VideoGet 页面再点一次「从浏览器读取登录」。"
         )
     else:
         advice = (
-            "cookie 有登录态，但抖音仍返回了空列表。可能是 cookie 已过期、"
-            "账号或网络被临时风控，或该主页没有公开作品。"
-            "请在浏览器确认能看到该主页作品，然后重新运行 "
-            "python3 export_cookies.py douyin 覆盖 Cookie 再试。"
+            "登录还在，但抖音没有返回作品。可能是登录已过期、被临时风控，"
+            "或这个主页没有公开作品。请在浏览器确认能看到作品，然后在 VideoGet "
+            "页面再点一次「从浏览器读取登录」。"
         )
 
     detail = f"（{errors[-1]}）" if errors else ""

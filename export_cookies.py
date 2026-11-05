@@ -14,6 +14,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import shlex
+import subprocess
 import sys
 import time
 from http.cookiejar import MozillaCookieJar
@@ -64,6 +66,123 @@ def _browser_loader(browser: str):
 def _cookie_matches(cookie, domains: tuple[str, ...]) -> bool:
     host = (cookie.domain or "").lstrip(".").lower()
     return any(host == d or host.endswith("." + d) for d in domains)
+
+
+def douyin_login_status(path: Path | None = None) -> dict:
+    """Say whether the saved Douyin cookie file contains a login session.
+
+    The cookie values stay on disk. Callers only learn whether ``sessionid``
+    is present.
+    """
+    path = path or SITES["douyin"]["output"]
+    if not path.is_file() or path.stat().st_size == 0:
+        return {
+            "logged_in": False,
+            "path": str(path),
+            "message": "还没有抖音登录。在 Chrome 打开并登录 douyin.com 后，点「从浏览器读取登录」，只需这一次。",
+        }
+    names = netscape_cookie_names(path.read_text(encoding="utf-8", errors="replace"))
+    if "sessionid" in names:
+        return {
+            "logged_in": True,
+            "path": str(path),
+            "message": "抖音登录已保存在这台 Mac 上，可以直接下载主页。过期后再点一次按钮即可。",
+        }
+    return {
+        "logged_in": False,
+        "path": str(path),
+        "message": "保存的抖音 Cookie 里没有登录状态。请先在 Chrome 登录 douyin.com，再点一次按钮。",
+    }
+
+
+def _apple_string(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _export_via_osascript(browser: str) -> str | None:
+    """Run the exporter outside the background service so macOS can show a prompt.
+
+    Returns an error string, or None when the command finishes.
+    """
+    if sys.platform != "darwin":
+        return "当前系统不能弹出钥匙串授权"
+    shell_cmd = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).resolve()))} "
+        f"douyin --browser {browser}"
+    )
+    apple = "do shell script " + _apple_string(shell_cmd)
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", apple],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except Exception as error:
+        return str(error)
+    if result.returncode != 0:
+        return (result.stderr or result.stdout or "系统授权窗口被取消").strip()
+    return None
+
+
+def _open_terminal_export(browser: str) -> bool:
+    """Open Terminal with the export command already running. No command to copy."""
+    if sys.platform != "darwin":
+        return False
+    folder = Path.home() / "Library" / "Application Support" / "VideoGet"
+    folder.mkdir(parents=True, exist_ok=True)
+    command_file = folder / "export-douyin.command"
+    command_file.write_text(
+        "#!/bin/bash\n"
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).resolve()))} "
+        f"douyin --browser {browser}\n"
+        "echo\n"
+        "echo 可以关闭这个窗口了\n",
+        encoding="utf-8",
+    )
+    command_file.chmod(0o755)
+    subprocess.Popen(["open", "-a", "Terminal", str(command_file)])
+    return True
+
+
+def export_douyin_from_app(browser: str = "chrome") -> dict:
+    """Export a Douyin login for the web UI.
+
+    The background server often cannot read the macOS Keychain. This tries the
+    direct read first, then a system prompt, then opens Terminal already running
+    the export so the user only has to click Allow.
+    """
+    browser = (browser or "chrome").strip().lower()
+    allowed = {"chrome", "safari", "firefox", "edge", "chromium", "brave"}
+    if browser not in allowed:
+        return {"ok": False, "logged_in": False, "error": "不支持的浏览器"}
+
+    try:
+        export_with_browser_cookie3("douyin", browser)
+    except LoginCookieMissing as error:
+        status = douyin_login_status()
+        status.update({"ok": False, "error": str(error)})
+        return status
+    except Exception as error:
+        dialog_error = _export_via_osascript(browser)
+        status = douyin_login_status()
+        if status["logged_in"]:
+            status["ok"] = True
+            return status
+        if _open_terminal_export(browser):
+            return {
+                "ok": False,
+                "pending": True,
+                "logged_in": False,
+                "message": "已打开一个窗口读取 Chrome。请点「允许」。成功后这里会变成已登录，不用复制命令。",
+                "error": dialog_error or str(error),
+            }
+        status.update({"ok": False, "error": str(error)})
+        return status
+
+    status = douyin_login_status()
+    status["ok"] = True
+    return status
 
 
 def netscape_cookie_names(text: str) -> set[str]:
