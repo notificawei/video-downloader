@@ -84,8 +84,36 @@ def main():
         action="store_true",
         help="Launch the web UI instead",
     )
+    parser.add_argument(
+        "--export-cookies",
+        choices=["douyin", "youtube"],
+        metavar="SITE",
+        help="Export Chrome cookies for douyin/youtube to ~/SITE_cookies.txt",
+    )
+    parser.add_argument(
+        "--browser",
+        default="chrome",
+        help="Browser for --export-cookies (default: chrome)",
+    )
 
     args = parser.parse_args()
+
+    if args.export_cookies:
+        from export_cookies import export_with_browser_cookie3, export_with_yt_dlp
+
+        site = args.export_cookies
+        browser = args.browser
+        try:
+            path = export_with_browser_cookie3(site, browser)
+        except Exception as first_error:
+            print(f"{YELLOW}browser_cookie3 failed: {first_error}{RESET}")
+            try:
+                path = export_with_yt_dlp(site, browser)
+            except Exception as second_error:
+                print(f"{RED}Export failed: {second_error}{RESET}")
+                sys.exit(1)
+        print(f"{GREEN}Saved{RESET}: {path}")
+        return
 
     if args.web:
         import subprocess, webbrowser, time as _t

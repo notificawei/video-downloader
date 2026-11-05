@@ -115,7 +115,9 @@
             </div>
 
             <p id="profileHint" class="profile-hint hidden">
-              将自动分页下载该主页的所有公开作品。作品较多时请保持页面和服务运行。
+              将自动分页下载该主页的所有公开作品。请先在终端运行
+              <code>python3 export_cookies.py douyin</code>
+              生成 ~/douyin_cookies.txt（Chrome 需已登录抖音并先完全退出），再重启 VideoGet。
             </p>
             <button id="downloadBtn" class="btn btn-download" onclick="startDownload()">
               Download
