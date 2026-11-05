@@ -434,7 +434,7 @@ function renderDownloads() {
 
     const metaHtml = isActive
       ? d.is_batch
-        ? `<span>批量下载中</span><span>已保存 ${d.completed_items || 0} 个作品</span>`
+        ? `<span>批量下载中</span><span>已保存 ${d.completed_items || 0}${d.total_items ? ' / ' + d.total_items : ''} 个作品</span>`
         : `<span>${d.speed || '–'}</span><span>ETA ${d.eta || '–'}</span><span>${pct.toFixed(1)}%</span>`
       : d.status === 'done'
       ? `<span style="color:var(--success)">✓ ${d.is_batch ? `已保存 ${d.completed_items || 0} 个作品` : 'Saved to downloads folder'}</span>`

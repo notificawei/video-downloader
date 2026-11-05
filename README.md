@@ -95,7 +95,14 @@ click **从浏览器读取登录** once. VideoGet saves the login on this Mac an
 it. Click the button again only after it expires. If macOS asks for Keychain
 access, click Allow.
 
-`python3 export_cookies.py douyin` does the same export from Terminal.
+When you download a profile, VideoGet opens a Chrome window, loads the profile
+with that login, and scrolls to the end. Douyin's own page signs the list
+requests, so no third-party signer is needed. If Douyin shows a slider check or
+login box in that window, finish it there. Posts are saved to
+`Desktop/VideoDownloader/抖音/<nickname>/`, and files that already exist are
+skipped on the next run. The first run installs `playwright` automatically.
+
+`python3 export_cookies.py douyin` does the same login export from Terminal.
 
 ### Quality options
 

@@ -20,6 +20,8 @@ from typing import Callable, Optional
 import requests
 import yt_dlp
 
+from douyin_browser import BrowserUnavailable, LoginRequired, collect_profile_posts, safe_name
+
 # Log to the same file launchd uses so errors are always visible.
 _LOG_FILE = Path.home() / "Library" / "Logs" / "videoget.log"
 _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -134,24 +136,32 @@ def _parse_cookie_file(path: Path, domain_filter: str) -> str:
     return _read_netscape_cookie_string(path, domain_filter)
 
 
-def _load_douyin_cookie_string() -> Optional[str]:
-    """Return a Douyin cookie header from an exported cookie file, if present.
-
-    F2 needs a logged-in cookie to read a profile's post list. Reading it from
-    Chrome requires Keychain access that a launchd agent cannot obtain, so an
-    exported file is the dependable source.
-    """
+def _douyin_cookie_path() -> Optional[Path]:
+    """Return the first exported Douyin cookie file that exists."""
     for p in (
         Path.home() / "douyin_cookies.txt",
         Path.home() / "Desktop" / "douyin_cookies.txt",
         Path(__file__).parent / "douyin_cookies.txt",
     ):
         if p.is_file():
-            cookie = _parse_cookie_file(p, "douyin.com")
-            if cookie:
-                log.info("Douyin: using cookie file %s", p)
-                return cookie
-            log.warning("Douyin: %s contains no douyin.com cookies", p)
+            return p
+    return None
+
+
+def _load_douyin_cookie_string() -> Optional[str]:
+    """Return a Douyin cookie header from an exported cookie file, if present.
+
+    Reading Chrome's cookies needs Keychain access that a launchd agent cannot
+    obtain, so an exported file is the dependable source.
+    """
+    path = _douyin_cookie_path()
+    if path is None:
+        return None
+    cookie = _parse_cookie_file(path, "douyin.com")
+    if cookie:
+        log.info("Douyin: using cookie file %s", path)
+        return cookie
+    log.warning("Douyin: %s contains no douyin.com cookies", path)
     return None
 
 
@@ -264,8 +274,33 @@ def _cookie_names(cookie: str) -> set[str]:
     }
 
 
-# How long to wait for the first saved post before treating the list read as stuck.
-_DOUYIN_LIST_TIMEOUT = 75
+_DOUYIN_DOWNLOAD_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+)
+
+
+def _download_first_working(urls: list[str], target: Path, headers: dict) -> bool:
+    """Stream the first URL that works into target. Returns whether one did."""
+    partial = target.with_name(target.name + ".part")
+    for url in urls:
+        try:
+            with requests.get(url, headers=headers, stream=True, timeout=30) as response:
+                if response.status_code != 200:
+                    log.warning("Douyin media %s -> HTTP %s", url[:80], response.status_code)
+                    continue
+                with partial.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=1 << 16):
+                        handle.write(chunk)
+            if partial.stat().st_size > 0:
+                partial.replace(target)
+                return True
+        except (requests.RequestException, OSError) as error:
+            log.warning("Douyin media download failed (%s): %s", url[:80], error)
+        finally:
+            if partial.exists():
+                partial.unlink()
+    return False
 
 
 def _douyin_failure_message(
@@ -275,33 +310,24 @@ def _douyin_failure_message(
     cookie: str,
 ) -> str:
     """Build an actionable message for a Douyin profile download failure."""
-    if return_code == -9:
-        reason = f"读取作品列表超过 {_DOUYIN_LIST_TIMEOUT} 秒，仍没有保存任何作品"
-    elif saved_items == 0 and return_code == 0:
-        reason = "抖音接口未返回任何作品"
-    else:
-        reason = f"F2 退出码 {return_code}"
-
     names = _cookie_names(cookie)
     if not cookie:
-        advice = (
+        return (
             "缺少抖音登录。打开 VideoGet 页面，点「从浏览器读取登录」。"
             "Chrome 需已登录 www.douyin.com；若失败，完全退出 Chrome 后再点一次。"
         )
-    elif "sessionid" not in names:
-        advice = (
+    if "sessionid" not in names:
+        return (
             "保存的抖音登录里没有 sessionid。请在 Chrome 登录 www.douyin.com 后，"
             "回到 VideoGet 页面再点一次「从浏览器读取登录」。"
         )
-    else:
-        advice = (
-            "登录还在，但抖音没有返回作品。可能是登录已过期、被临时风控，"
-            "或这个主页没有公开作品。请在浏览器确认能看到作品，然后在 VideoGet "
-            "页面再点一次「从浏览器读取登录」。"
-        )
 
     detail = f"（{errors[-1]}）" if errors else ""
-    return f"抖音主页下载失败：{reason}{detail}。{advice}"
+    return (
+        f"抖音主页下载失败：浏览器没有读到任何作品{detail}。"
+        "请看刚才弹出的 Chrome 窗口：如果出现滑块或验证，完成后再重试；"
+        "如果显示未登录，回到 VideoGet 页面再点一次「从浏览器读取登录」。"
+    )
 
 
 _DOUYIN_PROFILE_RE = re.compile(
@@ -554,6 +580,7 @@ class DownloadProgress:
         self.error = None
         self.is_batch = False
         self.completed_items = 0
+        self.total_items = 0
 
     def to_dict(self):
         return {
@@ -567,6 +594,7 @@ class DownloadProgress:
             "error": self.error,
             "is_batch": self.is_batch,
             "completed_items": self.completed_items,
+            "total_items": self.total_items,
         }
 
 
@@ -874,114 +902,49 @@ class VideoDownloader:
         progress: DownloadProgress,
         cookies_from_browser: Optional[str] = None,
     ) -> None:
-        """Download every public post from a Douyin profile using F2."""
+        """Download every public post from a Douyin profile.
+
+        A real Chrome loads the profile so Douyin's own scripts sign the list
+        requests; the posts it returns are then saved with plain HTTP.
+        """
         progress.status = "downloading"
         progress.filename = "正在读取抖音主页作品列表…"
 
-        before = {
-            p.resolve()
-            for p in self.output_dir.rglob("*")
-            if p.is_file() and p.suffix.lower() in (".mp4", ".webm", ".jpg", ".jpeg", ".png")
-        }
-        sec_user_id = douyin_sec_user_id(url)
-        f2_url = f"https://www.douyin.com/user/{sec_user_id}" if sec_user_id else url
-        command = [
-            sys.executable, "-m", "f2", "dy",
-            "--url", f2_url,
-            "--mode", "post",
-            "--path", str(self.output_dir),
-            "--interval", "all",
-            "--max-counts", "0",
-            "--page-counts", "20",
-        ]
         cookie_string = _load_douyin_cookie_string()
-        if cookie_string:
-            command.extend(["--cookie", cookie_string])
-        elif cookies_from_browser:
-            log.warning(
-                "Douyin: no cookie file found — falling back to --auto-cookie, "
-                "which usually fails under launchd (no Keychain access)"
-            )
-            command.extend(["--auto-cookie", cookies_from_browser])
-
         if "sessionid" not in _cookie_names(cookie_string or ""):
             progress.status = "error"
             progress.error = _douyin_failure_message(1, 0, [], cookie_string or "")
             log.error("Douyin profile download refused: %s", progress.error)
             return
 
+        sec_user_id = douyin_sec_user_id(url)
+        if not sec_user_id:
+            progress.status = "error"
+            progress.error = "没能从这个链接里识别出抖音主页，请直接粘贴主页链接。"
+            return
+
+        def on_progress(_count: int, message: str) -> None:
+            progress.filename = message
+
         log.info("Starting Douyin profile download: %s", url)
-        recent_errors: list[str] = []
         try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
-            )
-            assert process.stdout is not None
-
-            def _consume_f2_output() -> None:
-                for line in process.stdout:
-                    clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
-                    if not clean_line:
-                        continue
-                    log.info("[f2] %s", clean_line)
-                    if any(token in clean_line for token in ("Error", "错误", "失败", "为空")):
-                        recent_errors.append(clean_line)
-
-            threading.Thread(target=_consume_f2_output, daemon=True).start()
-
-            started = time.monotonic()
-            while True:
-                current = {
-                    p.resolve()
-                    for p in self.output_dir.rglob("*")
-                    if p.is_file()
-                    and p.suffix.lower() in (".mp4", ".webm", ".jpg", ".jpeg", ".png")
-                }
-                progress.completed_items = len(current - before)
-                if progress.completed_items:
-                    progress.filename = f"已保存 {progress.completed_items} 个作品"
-                if process.poll() is not None:
-                    break
-                if progress.completed_items == 0 and time.monotonic() - started >= _DOUYIN_LIST_TIMEOUT:
-                    process.kill()
-                    process.wait(timeout=5)
-                    raise RuntimeError(_douyin_failure_message(
-                        -9, 0, recent_errors, cookie_string or "",
-                    ))
-                waited = int(time.monotonic() - started)
-                if progress.completed_items == 0:
-                    progress.filename = f"正在读取抖音主页作品列表…（已等待 {waited} 秒）"
-                time.sleep(0.5)
-
-            return_code = process.wait()
-
-            after = {
-                p.resolve()
-                for p in self.output_dir.rglob("*")
-                if p.is_file() and p.suffix.lower() in (".mp4", ".webm", ".jpg", ".jpeg", ".png")
-            }
-            progress.completed_items = len(after - before)
-
-            # Douyin rejects unauthenticated profile reads, and F2 does not
-            # always signal that through its exit code, so saving nothing is
-            # treated as a failure rather than reported as a finished download.
-            if return_code != 0 or progress.completed_items == 0:
+            posts = self._collect_douyin_posts(sec_user_id, on_progress)
+            if not posts:
                 raise RuntimeError(_douyin_failure_message(
-                    return_code, progress.completed_items, recent_errors,
-                    cookie_string or "",
+                    0, 0, [], cookie_string or "",
                 ))
+
+            progress.total_items = len(posts)
+            new_files = self._save_douyin_posts(posts, progress)
+            if progress.completed_items == 0:
+                raise RuntimeError(
+                    f"找到 {len(posts)} 个作品，但没有一个能下载成功。"
+                    "可能是链接已过期或网络被拦截，请稍后再试。"
+                )
 
             progress.status = "processing"
             try:
-                self._normalise_batch_videos(after - before, progress)
+                self._normalise_batch_videos(new_files, progress)
             except Exception:
                 # The posts are already on disk, so a transcoding problem must
                 # not discard an otherwise successful batch download.
@@ -996,12 +959,70 @@ class VideoDownloader:
             progress.error = str(e)
             log.exception("Douyin profile download failed for %s", url)
 
+    def _collect_douyin_posts(self, sec_user_id: str, on_progress) -> list:
+        """Read the profile's post list through Chrome. Split out so tests can replace it."""
+        cookie_file = _douyin_cookie_path()
+        try:
+            return collect_profile_posts(
+                sec_user_id,
+                cookie_file or Path("/nonexistent"),
+                on_progress,
+            )
+        except BrowserUnavailable as error:
+            raise RuntimeError(f"抖音主页下载失败：{error}") from error
+        except LoginRequired as error:
+            raise RuntimeError(
+                f"抖音主页下载失败：{error}"
+                "请在 Chrome 重新登录 www.douyin.com，然后回到 VideoGet 页面再点一次「从浏览器读取登录」。"
+            ) from error
+
+    def _save_douyin_posts(self, posts: list, progress: DownloadProgress) -> set[Path]:
+        """Save each post under <output>/抖音/<nickname>/ and return the new files."""
+        new_files: set[Path] = set()
+        total = len(posts)
+        folder = self.output_dir / "抖音" / safe_name(posts[0].nickname or "主页", 30)
+        folder.mkdir(parents=True, exist_ok=True)
+        headers = {
+            "User-Agent": _DOUYIN_DOWNLOAD_UA,
+            "Referer": "https://www.douyin.com/",
+        }
+
+        for index, post in enumerate(posts, start=1):
+            stamp = datetime.fromtimestamp(post.create_time).strftime("%Y%m%d") if post.create_time else "00000000"
+            stem = f"{stamp}_{post.aweme_id}_{safe_name(post.desc)}"
+            progress.filename = f"正在下载 {index}/{total}：{safe_name(post.desc, 24)}"
+            progress.percent = (index - 1) / total * 100
+
+            saved: list[Path] = []
+            if post.video_urls:
+                target = folder / f"{stem}.mp4"
+                if target.exists() and target.stat().st_size > 0:
+                    saved.append(target)
+                elif _download_first_working(post.video_urls, target, headers):
+                    saved.append(target)
+                    new_files.add(target)
+            else:
+                for number, image_url in enumerate(post.image_urls, start=1):
+                    target = folder / f"{stem}_{number:02d}.jpg"
+                    if target.exists() and target.stat().st_size > 0:
+                        saved.append(target)
+                    elif _download_first_working([image_url], target, headers):
+                        saved.append(target)
+                        new_files.add(target)
+
+            if saved:
+                progress.completed_items += 1
+            else:
+                log.warning("Douyin post %s could not be downloaded", post.aweme_id)
+
+        return new_files
+
     def _normalise_batch_videos(
         self, new_files: set[Path], progress: DownloadProgress
     ) -> None:
         """Re-encode HEVC posts so Premiere Pro and QuickTime can open them.
 
-        F2 saves Douyin's originals untouched, and Douyin serves a lot of
+        Douyin's originals are saved untouched, and Douyin serves a lot of
         HEVC/H.265, which Premiere Pro often refuses. H.264 files are left
         alone so a large batch is not needlessly re-encoded.
         """

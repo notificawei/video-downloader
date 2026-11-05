@@ -1,13 +1,16 @@
 import csv
 import unittest
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 import yt_dlp
 
+from douyin_browser import DouyinPost
 from downloader import (
     DownloadProgress,
+    _download_first_working,
     VideoDownloader,
     _douyin_failure_message,
     _parse_cookie_file,
@@ -100,9 +103,9 @@ class DouyinProfileUrlTests(unittest.TestCase):
         message = _douyin_failure_message(0, 0, [], "ttwid=abc")
         self.assertIn("sessionid", message)
 
-    def test_logged_in_cookie_points_to_expiry_or_risk_control(self):
+    def test_logged_in_cookie_points_to_the_browser_window(self):
         message = _douyin_failure_message(0, 0, [], "sessionid=abc; ttwid=def")
-        self.assertIn("风控", message)
+        self.assertIn("Chrome 窗口", message)
         self.assertNotIn("缺少 sessionid", message)
 
     def test_direct_profile_url(self):
@@ -138,97 +141,106 @@ class DouyinProfileUrlTests(unittest.TestCase):
 
     @patch("downloader._video_codec", return_value="h264")
     @patch("downloader._load_douyin_cookie_string", return_value="sessionid=abc")
-    @patch("downloader.subprocess.Popen")
-    def test_profile_download_invokes_f2_post_mode(self, popen, _cookie, _codec):
-        saved_file = {}
+    def test_profile_download_saves_every_post(self, _cookie, _codec):
+        posts = [
+            DouyinPost("1", desc="第一条", create_time=1_700_000_000, nickname="作者",
+                       video_urls=["https://v.example/1.mp4"]),
+            DouyinPost("2", desc="图文", create_time=1_700_000_100, nickname="作者",
+                       image_urls=["https://i.example/a.jpg", "https://i.example/b.jpg"]),
+        ]
 
-        def fake_popen(command, **kwargs):
-            # Simulate F2 writing one post into the output directory.
-            (saved_file["dir"] / "clip.mp4").write_bytes(b"data")
-            process = Mock()
-            process.stdout = []
-            process.wait.return_value = 0
-            process.poll.return_value = 0
-            return process
-
-        popen.side_effect = fake_popen
+        def fake_download(urls, target, headers):
+            target.write_bytes(b"data")
+            return True
 
         with TemporaryDirectory() as output_dir:
-            saved_file["dir"] = Path(output_dir)
             downloader = VideoDownloader(output_dir=output_dir)
             progress = DownloadProgress()
-            downloader._run_douyin_profile_download(
-                "https://www.douyin.com/user/MS4wLjABAAAA_example",
-                progress,
-                cookies_from_browser="chrome",
-            )
+            with patch.object(VideoDownloader, "_collect_douyin_posts", return_value=posts), \
+                 patch("downloader._download_first_working", side_effect=fake_download):
+                downloader._run_douyin_profile_download(
+                    "https://www.douyin.com/user/MS4wLjABAAAA_example", progress,
+                )
+            saved = sorted(p.name for p in (Path(output_dir) / "抖音" / "作者").iterdir())
 
-        # subprocess.run() is built on Popen, so later ffprobe calls also land
-        # in this mock; the F2 invocation is the first one.
-        command = popen.call_args_list[0].args[0]
-        self.assertIn("post", command)
-        self.assertIn("--cookie", command)
-        self.assertIn("sessionid=abc", command)
-        self.assertNotIn("--auto-cookie", command)
         self.assertEqual(progress.status, "done")
-        self.assertEqual(progress.completed_items, 1)
+        self.assertEqual(progress.completed_items, 2)
+        self.assertEqual(progress.total_items, 2)
+        self.assertEqual(len(saved), 3)
+        self.assertTrue(any(name.endswith(".mp4") for name in saved))
 
     @patch("downloader._load_douyin_cookie_string", return_value="sessionid=abc")
-    @patch("downloader.subprocess.Popen")
-    def test_cookie_file_is_passed_to_f2(self, popen, _cookie):
-        process = Mock()
-        process.stdout = []
-        process.wait.return_value = 0
-        process.poll.return_value = 0
-        popen.return_value = process
-
-        with TemporaryDirectory() as output_dir:
-            downloader = VideoDownloader(output_dir=output_dir)
-            downloader._run_douyin_profile_download(
-                "https://www.douyin.com/user/MS4wLjABAAAA_example",
-                DownloadProgress(),
-            )
-
-        command = popen.call_args_list[0].args[0]
-        self.assertIn("--cookie", command)
-        self.assertIn("sessionid=abc", command)
-        self.assertNotIn("--auto-cookie", command)
-
-    @patch("downloader._load_douyin_cookie_string", return_value=None)
-    @patch("downloader.subprocess.Popen")
-    def test_zero_saved_items_reports_error(self, popen, _cookie):
+    def test_empty_post_list_reports_actionable_error(self, _cookie):
         with TemporaryDirectory() as output_dir:
             downloader = VideoDownloader(output_dir=output_dir)
             progress = DownloadProgress()
-            downloader._run_douyin_profile_download(
-                "https://www.douyin.com/user/MS4wLjABAAAA_example",
-                progress,
-            )
+            with patch.object(VideoDownloader, "_collect_douyin_posts", return_value=[]):
+                downloader._run_douyin_profile_download(
+                    "https://www.douyin.com/user/MS4wLjABAAAA_example", progress,
+                )
 
-        popen.assert_not_called()
+        self.assertEqual(progress.status, "error")
+        self.assertIn("Chrome", progress.error)
+
+    @patch("downloader._load_douyin_cookie_string", return_value="sessionid=abc")
+    def test_existing_files_are_not_downloaded_again(self, _cookie):
+        post = DouyinPost("9", desc="已有", create_time=1_700_000_000, nickname="作者",
+                          video_urls=["https://v.example/9.mp4"])
+        with TemporaryDirectory() as output_dir:
+            folder = Path(output_dir) / "抖音" / "作者"
+            folder.mkdir(parents=True)
+            stamp = datetime.fromtimestamp(1_700_000_000).strftime("%Y%m%d")
+            (folder / f"{stamp}_9_已有.mp4").write_bytes(b"old")
+            downloader = VideoDownloader(output_dir=output_dir)
+            progress = DownloadProgress()
+            with patch.object(VideoDownloader, "_collect_douyin_posts", return_value=[post]), \
+                 patch("downloader._download_first_working") as fetch:
+                downloader._run_douyin_profile_download(
+                    "https://www.douyin.com/user/MS4wLjABAAAA_example", progress,
+                )
+
+        fetch.assert_not_called()
+        self.assertEqual(progress.completed_items, 1)
+
+    @patch("downloader._load_douyin_cookie_string", return_value=None)
+    def test_missing_login_is_refused_before_opening_chrome(self, _cookie):
+        with TemporaryDirectory() as output_dir:
+            downloader = VideoDownloader(output_dir=output_dir)
+            progress = DownloadProgress()
+            with patch.object(VideoDownloader, "_collect_douyin_posts") as collect:
+                downloader._run_douyin_profile_download(
+                    "https://www.douyin.com/user/MS4wLjABAAAA_example", progress,
+                )
+
+        collect.assert_not_called()
         self.assertEqual(progress.status, "error")
         self.assertIn("从浏览器读取登录", progress.error)
 
-    @patch("downloader._DOUYIN_LIST_TIMEOUT", 0)
-    @patch("downloader._load_douyin_cookie_string", return_value="sessionid=abc")
-    @patch("downloader.subprocess.Popen")
-    def test_list_read_timeout_stops_the_spinner(self, popen, _cookie):
-        process = Mock()
-        process.stdout = []
-        process.poll.return_value = None
-        popen.return_value = process
+    def test_download_tries_next_url_when_first_fails(self):
+        class Response:
+            def __init__(self, status, body=b""):
+                self.status_code = status
+                self._body = body
 
-        with TemporaryDirectory() as output_dir:
-            downloader = VideoDownloader(output_dir=output_dir)
-            progress = DownloadProgress()
-            downloader._run_douyin_profile_download(
-                "https://www.douyin.com/user/MS4wLjABAAAA_example",
-                progress,
-            )
+            def __enter__(self):
+                return self
 
-        process.kill.assert_called_once()
-        self.assertEqual(progress.status, "error")
-        self.assertIn("超过", progress.error)
+            def __exit__(self, *exc):
+                return False
+
+            def iter_content(self, chunk_size):
+                yield self._body
+
+        responses = [Response(403), Response(200, b"video-bytes")]
+        with TemporaryDirectory() as tmp, patch("downloader.requests.get", side_effect=responses):
+            target = Path(tmp) / "clip.mp4"
+            ok = _download_first_working(["https://a/x", "https://b/x"], target, {})
+            data = target.read_bytes() if target.exists() else b""
+            leftovers = [p.name for p in Path(tmp).iterdir() if p.name.endswith(".part")]
+
+        self.assertTrue(ok)
+        self.assertEqual(data, b"video-bytes")
+        self.assertEqual(leftovers, [])
 
     def test_netscape_cookie_file_is_flattened(self):
         with TemporaryDirectory() as tmp:
