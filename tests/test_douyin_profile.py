@@ -137,7 +137,7 @@ class DouyinProfileUrlTests(unittest.TestCase):
         self.assertEqual(info["uploader"], "中国人在朝鲜")
 
     @patch("downloader._video_codec", return_value="h264")
-    @patch("downloader._load_douyin_cookie_string", return_value=None)
+    @patch("downloader._load_douyin_cookie_string", return_value="sessionid=abc")
     @patch("downloader.subprocess.Popen")
     def test_profile_download_invokes_f2_post_mode(self, popen, _cookie, _codec):
         saved_file = {}
@@ -148,6 +148,7 @@ class DouyinProfileUrlTests(unittest.TestCase):
             process = Mock()
             process.stdout = []
             process.wait.return_value = 0
+            process.poll.return_value = 0
             return process
 
         popen.side_effect = fake_popen
@@ -166,8 +167,9 @@ class DouyinProfileUrlTests(unittest.TestCase):
         # in this mock; the F2 invocation is the first one.
         command = popen.call_args_list[0].args[0]
         self.assertIn("post", command)
-        self.assertIn("--auto-cookie", command)
-        self.assertIn("chrome", command)
+        self.assertIn("--cookie", command)
+        self.assertIn("sessionid=abc", command)
+        self.assertNotIn("--auto-cookie", command)
         self.assertEqual(progress.status, "done")
         self.assertEqual(progress.completed_items, 1)
 
@@ -177,6 +179,7 @@ class DouyinProfileUrlTests(unittest.TestCase):
         process = Mock()
         process.stdout = []
         process.wait.return_value = 0
+        process.poll.return_value = 0
         popen.return_value = process
 
         with TemporaryDirectory() as output_dir:
@@ -194,9 +197,25 @@ class DouyinProfileUrlTests(unittest.TestCase):
     @patch("downloader._load_douyin_cookie_string", return_value=None)
     @patch("downloader.subprocess.Popen")
     def test_zero_saved_items_reports_error(self, popen, _cookie):
+        with TemporaryDirectory() as output_dir:
+            downloader = VideoDownloader(output_dir=output_dir)
+            progress = DownloadProgress()
+            downloader._run_douyin_profile_download(
+                "https://www.douyin.com/user/MS4wLjABAAAA_example",
+                progress,
+            )
+
+        popen.assert_not_called()
+        self.assertEqual(progress.status, "error")
+        self.assertIn("douyin_cookies.txt", progress.error)
+
+    @patch("downloader._DOUYIN_LIST_TIMEOUT", 0)
+    @patch("downloader._load_douyin_cookie_string", return_value="sessionid=abc")
+    @patch("downloader.subprocess.Popen")
+    def test_list_read_timeout_stops_the_spinner(self, popen, _cookie):
         process = Mock()
         process.stdout = []
-        process.wait.return_value = 0
+        process.poll.return_value = None
         popen.return_value = process
 
         with TemporaryDirectory() as output_dir:
@@ -207,8 +226,9 @@ class DouyinProfileUrlTests(unittest.TestCase):
                 progress,
             )
 
+        process.kill.assert_called_once()
         self.assertEqual(progress.status, "error")
-        self.assertIn("douyin_cookies.txt", progress.error)
+        self.assertIn("超过", progress.error)
 
     def test_netscape_cookie_file_is_flattened(self):
         with TemporaryDirectory() as tmp:

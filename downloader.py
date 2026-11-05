@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -263,6 +264,10 @@ def _cookie_names(cookie: str) -> set[str]:
     }
 
 
+# How long to wait for the first saved post before treating the list read as stuck.
+_DOUYIN_LIST_TIMEOUT = 75
+
+
 def _douyin_failure_message(
     return_code: int,
     saved_items: int,
@@ -270,7 +275,9 @@ def _douyin_failure_message(
     cookie: str,
 ) -> str:
     """Build an actionable message for a Douyin profile download failure."""
-    if saved_items == 0 and return_code == 0:
+    if return_code == -9:
+        reason = f"读取作品列表超过 {_DOUYIN_LIST_TIMEOUT} 秒，仍没有保存任何作品"
+    elif saved_items == 0 and return_code == 0:
         reason = "抖音接口未返回任何作品"
     else:
         reason = f"F2 退出码 {return_code}"
@@ -900,6 +907,12 @@ class VideoDownloader:
             )
             command.extend(["--auto-cookie", cookies_from_browser])
 
+        if "sessionid" not in _cookie_names(cookie_string or ""):
+            progress.status = "error"
+            progress.error = _douyin_failure_message(1, 0, [], cookie_string or "")
+            log.error("Douyin profile download refused: %s", progress.error)
+            return
+
         log.info("Starting Douyin profile download: %s", url)
         recent_errors: list[str] = []
         try:
@@ -907,18 +920,28 @@ class VideoDownloader:
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
             assert process.stdout is not None
-            for line in process.stdout:
-                clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
-                if clean_line:
+
+            def _consume_f2_output() -> None:
+                for line in process.stdout:
+                    clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+                    if not clean_line:
+                        continue
                     log.info("[f2] %s", clean_line)
                     if any(token in clean_line for token in ("Error", "错误", "失败", "为空")):
                         recent_errors.append(clean_line)
+
+            threading.Thread(target=_consume_f2_output, daemon=True).start()
+
+            started = time.monotonic()
+            while True:
                 current = {
                     p.resolve()
                     for p in self.output_dir.rglob("*")
@@ -928,6 +951,18 @@ class VideoDownloader:
                 progress.completed_items = len(current - before)
                 if progress.completed_items:
                     progress.filename = f"已保存 {progress.completed_items} 个作品"
+                if process.poll() is not None:
+                    break
+                if progress.completed_items == 0 and time.monotonic() - started >= _DOUYIN_LIST_TIMEOUT:
+                    process.kill()
+                    process.wait(timeout=5)
+                    raise RuntimeError(_douyin_failure_message(
+                        -9, 0, recent_errors, cookie_string or "",
+                    ))
+                waited = int(time.monotonic() - started)
+                if progress.completed_items == 0:
+                    progress.filename = f"正在读取抖音主页作品列表…（已等待 {waited} 秒）"
+                time.sleep(0.5)
 
             return_code = process.wait()
 
