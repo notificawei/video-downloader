@@ -103,11 +103,15 @@ def _write_netscape(path: Path, cookies) -> int:
     return count
 
 
+SCRIPT_VERSION = "2026-11-05-httponly"
+
+
 def export_with_browser_cookie3(site: str, browser: str) -> Path:
     config = SITES[site]
     output: Path = config["output"]
     loader = _browser_loader(browser)
 
+    print(f"export_cookies 版本 {SCRIPT_VERSION}")
     print(f"正在从 {browser} 读取 {site} Cookie…")
     print("若系统弹出钥匙串权限，请点「允许」。")
     print("若提示 Cookie 数据库被锁定，请先完全退出 Chrome 再重试。\n")
