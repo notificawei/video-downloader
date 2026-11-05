@@ -19,6 +19,10 @@ import time
 from http.cookiejar import MozillaCookieJar
 from pathlib import Path
 
+class LoginCookieMissing(RuntimeError):
+    """Browser cookies were read, but the login cookie is not among them."""
+
+
 SITES = {
     "douyin": {
         "domains": ("douyin.com", "iesdouyin.com"),
@@ -60,6 +64,27 @@ def _browser_loader(browser: str):
 def _cookie_matches(cookie, domains: tuple[str, ...]) -> bool:
     host = (cookie.domain or "").lstrip(".").lower()
     return any(host == d or host.endswith("." + d) for d in domains)
+
+
+def netscape_cookie_names(text: str) -> set[str]:
+    """Return cookie names from a Netscape file, including HttpOnly rows.
+
+    MozillaCookieJar prefixes HttpOnly cookies with ``#HttpOnly_``. Those lines
+    look like comments, but they are the login cookies (Douyin ``sessionid``).
+    """
+    names = set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        elif line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) >= 7 and fields[5]:
+            names.add(fields[5])
+    return names
 
 
 def _write_netscape(path: Path, cookies) -> int:
@@ -117,45 +142,51 @@ def export_with_browser_cookie3(site: str, browser: str) -> Path:
     if count == 0 or not output.exists() or output.stat().st_size == 0:
         raise RuntimeError(f"写入失败：{output}")
 
-    text = output.read_text(encoding="utf-8", errors="replace")
-    # Netscape: domain \t flag \t path \t secure \t expires \t name \t value
-    names_in_file = {
-        line.split("\t")[5]
-        for line in text.splitlines()
-        if line and not line.startswith("#") and line.count("\t") >= 6
-    }
-    missing = [name for name in config["must_have"] if name not in names_in_file]
+    # Names on the cookie objects are the source of truth. The file check
+    # covers HttpOnly rows, which MozillaCookieJar saves as ``#HttpOnly_`` lines.
+    names = {cookie.name for cookie in cookies}
+    names |= netscape_cookie_names(output.read_text(encoding="utf-8", errors="replace"))
+    missing = [name for name in config["must_have"] if name not in names]
 
     print(f"已保存 → {output}  （{count} 条，{output.stat().st_size} 字节）")
     if missing:
-        raise RuntimeError(
+        raise LoginCookieMissing(
             f"文件里缺少登录关键（{', '.join(missing)}）。\n"
-            f"请在 {browser} 登录 {config['login_url']} 后再运行本命令。"
+            f"请在 {browser} 打开并登录 {config['login_url']}，"
+            "确认页面右上角是你的头像，完全退出浏览器后再运行本命令。"
         )
+    if config["must_have"]:
+        print(f"登录态已包含：{', '.join(config['must_have'])}")
     return output
 
 
 def export_with_yt_dlp(site: str, browser: str) -> Path:
-    """Fallback: ask yt-dlp to dump browser cookies into the cookie file."""
-    import yt_dlp
+    """Fallback when browser_cookie3 cannot open the browser cookie database."""
+    try:
+        from yt_dlp.cookies import extract_cookies_from_browser
+    except ImportError as e:
+        raise RuntimeError("yt-dlp 不可用，无法改用第二种导出方式") from e
 
     config = SITES[site]
     output: Path = config["output"]
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "cookiesfrombrowser": (browser,),
-        "cookiefile": str(output),
-    }
     print(f"改用 yt-dlp 从 {browser} 导出…")
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        try:
-            ydl.extract_info(config["login_url"], download=False)
-        except Exception:
-            pass
-    if not output.exists() or output.stat().st_size == 0:
-        raise RuntimeError(f"yt-dlp 未能写出 Cookie 文件：{output}")
+    jar = extract_cookies_from_browser(browser)
+    collected = [cookie for cookie in jar if _cookie_matches(cookie, config["domains"])]
+    if not collected:
+        raise RuntimeError(f"yt-dlp 没有读到 {site} Cookie")
+
+    count = _write_netscape(output, collected)
+    names = {cookie.name for cookie in collected}
+    names |= netscape_cookie_names(output.read_text(encoding="utf-8", errors="replace"))
+    missing = [name for name in config["must_have"] if name not in names]
+    print(f"已保存 → {output}  （{count} 条，{output.stat().st_size} 字节）")
+    if missing:
+        raise LoginCookieMissing(
+            f"文件里缺少登录关键（{', '.join(missing)}）。\n"
+            f"请在 {browser} 登录 {config['login_url']} 后再运行本命令。"
+        )
+    if config["must_have"]:
+        print(f"登录态已包含：{', '.join(config['must_have'])}")
     return output
 
 
@@ -172,10 +203,16 @@ def main() -> None:
 
     try:
         path = export_with_browser_cookie3(args.site, args.browser)
+    except LoginCookieMissing as login_error:
+        print(f"导出失败：{login_error}")
+        sys.exit(2)
     except Exception as first_error:
         print(f"browser_cookie3 方式失败：{first_error}\n")
         try:
             path = export_with_yt_dlp(args.site, args.browser)
+        except LoginCookieMissing as login_error:
+            print(f"导出失败：{login_error}")
+            sys.exit(2)
         except Exception as second_error:
             print(f"导出失败：{second_error}")
             print("\n请按顺序试：")
